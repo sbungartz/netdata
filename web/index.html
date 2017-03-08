@@ -1300,7 +1300,28 @@
                 + ' data-colors="' + NETDATA.colors[12] + '"'
                 + ' role="application"></div>';
 
-            if(typeof charts['system.ipv4'] !== 'undefined') {
+            if(typeof charts['net.eth0'] !== 'undefined') {
+                head += '<div style="margin-right: 10px;" data-netdata="net.eth0"'
+                + ' data-dimensions="received"'
+                + ' data-chart-library="easypiechart"'
+                + ' data-title="eth0 Inbound"'
+                + ' data-width="10%"'
+                + ' data-before="0"'
+                + ' data-after="-' + duration.toString() + '"'
+                + ' data-points="' + duration.toString() + '"'
+                + ' role="application"></div>';
+
+                head += '<div style="margin-right: 10px;" data-netdata="net.eth0"'
+                + ' data-dimensions="sent"'
+                + ' data-chart-library="easypiechart"'
+                + ' data-title="eth0 Outbound"'
+                + ' data-width="10%"'
+                + ' data-before="0"'
+                + ' data-after="-' + duration.toString() + '"'
+                + ' data-points="' + duration.toString() + '"'
+                + ' role="application"></div>';
+
+            } else if(typeof charts['system.ipv4'] !== 'undefined') {
                 head += '<div style="margin-right: 10px;" data-netdata="system.ipv4"'
                 + ' data-dimensions="received"'
                 + ' data-chart-library="easypiechart"'
