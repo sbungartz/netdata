@@ -3,18 +3,18 @@
 
 #define RRD_DEFAULT_GAP_INTERPOLATIONS 1
 
-void rrdset_check_rdlock_int(RRDSET *st, const char *file, const char *function, const unsigned long line) {
+void __rrdset_check_rdlock(RRDSET *st, const char *file, const char *function, const unsigned long line) {
     debug(D_RRD_CALLS, "Checking read lock on chart '%s'", st->id);
 
-    int ret = pthread_rwlock_trywrlock(&st->rrdset_rwlock);
+    int ret = netdata_rwlock_trywrlock(&st->rrdset_rwlock);
     if(ret == 0)
         fatal("RRDSET '%s' should be read-locked, but it is not, at function %s() at line %lu of file '%s'", st->id, function, line, file);
 }
 
-void rrdset_check_wrlock_int(RRDSET *st, const char *file, const char *function, const unsigned long line) {
+void __rrdset_check_wrlock(RRDSET *st, const char *file, const char *function, const unsigned long line) {
     debug(D_RRD_CALLS, "Checking write lock on chart '%s'", st->id);
 
-    int ret = pthread_rwlock_tryrdlock(&st->rrdset_rwlock);
+    int ret = netdata_rwlock_tryrdlock(&st->rrdset_rwlock);
     if(ret == 0)
         fatal("RRDSET '%s' should be write-locked, but it is not, at function %s() at line %lu of file '%s'", st->id, function, line, file);
 }
@@ -188,7 +188,7 @@ void rrdset_reset(RRDSET *st) {
         rd->last_collected_time.tv_sec = 0;
         rd->last_collected_time.tv_usec = 0;
         rd->collections_counter = 0;
-        memset(rd->values, 0, rd->entries * sizeof(storage_number));
+        // memset(rd->values, 0, rd->entries * sizeof(storage_number));
     }
 }
 
@@ -274,6 +274,8 @@ void rrdset_free(RRDSET *st) {
     // ------------------------------------------------------------------------
     // free it
 
+    netdata_rwlock_destroy(&st->rrdset_rwlock);
+
     // free directly allocated members
     freez(st->config_section);
 
@@ -286,8 +288,6 @@ void rrdset_free(RRDSET *st) {
 }
 
 void rrdset_save(RRDSET *st) {
-    RRDDIM *rd;
-
     rrdset_check_rdlock(st);
 
     // info("Saving chart '%s' ('%s')", st->id, st->name);
@@ -297,6 +297,7 @@ void rrdset_save(RRDSET *st) {
         savememory(st->cache_filename, st, st->memsize);
     }
 
+    RRDDIM *rd;
     rrddim_foreach_read(rd, st) {
         if(likely(rd->rrd_memory_mode == RRD_MEMORY_MODE_SAVE)) {
             debug(D_RRD_STATS, "Saving dimension '%s' to '%s'.", rd->name, rd->cache_filename);
@@ -310,25 +311,40 @@ void rrdset_delete(RRDSET *st) {
 
     rrdset_check_rdlock(st);
 
-    // info("Deleting chart '%s' ('%s')", st->id, st->name);
+    info("Deleting chart '%s' ('%s') from disk...", st->id, st->name);
 
-    if(st->rrd_memory_mode == RRD_MEMORY_MODE_SAVE) {
-        debug(D_RRD_STATS, "Deleting stats '%s' to '%s'.", st->name, st->cache_filename);
-        unlink(st->cache_filename);
+    if(st->rrd_memory_mode != RRD_MEMORY_MODE_RAM) {
+        info("Deleting chart header file '%s'.", st->cache_filename);
+        if(unlikely(unlink(st->cache_filename) == -1))
+            error("Cannot delete chart header file '%s'", st->cache_filename);
     }
 
     rrddim_foreach_read(rd, st) {
-        if(likely(rd->rrd_memory_mode == RRD_MEMORY_MODE_SAVE)) {
-            debug(D_RRD_STATS, "Deleting dimension '%s' to '%s'.", rd->name, rd->cache_filename);
-            unlink(rd->cache_filename);
+        if(likely(rd->rrd_memory_mode != RRD_MEMORY_MODE_RAM)) {
+            info("Deleting dimension file '%s'.", rd->cache_filename);
+            if(unlikely(unlink(rd->cache_filename) == -1))
+                error("Cannot delete dimension file '%s'", rd->cache_filename);
         }
     }
+
+    recursively_delete_dir(st->cache_dir, "left-over chart");
 }
 
 // ----------------------------------------------------------------------------
 // RRDSET - create a chart
 
-RRDSET *rrdset_create(
+static inline RRDSET *rrdset_find_on_create(RRDHOST *host, const char *fullid) {
+    RRDSET *st = rrdset_find(host, fullid);
+    if(unlikely(st)) {
+        rrdset_flag_clear(st, RRDSET_FLAG_OBSOLETE);
+        debug(D_RRD_CALLS, "RRDSET '%s', already exists.", fullid);
+        return st;
+    }
+
+    return NULL;
+}
+
+RRDSET *rrdset_create_custom(
           RRDHOST *host
         , const char *type
         , const char *id
@@ -340,6 +356,8 @@ RRDSET *rrdset_create(
         , long priority
         , int update_every
         , RRDSET_TYPE chart_type
+        , RRD_MEMORY_MODE memory_mode
+        , long history_entries
 ) {
     if(!type || !type[0]) {
         fatal("Cannot create rrd stats without a type.");
@@ -357,10 +375,14 @@ RRDSET *rrdset_create(
     char fullid[RRD_ID_LENGTH_MAX + 1];
     snprintfz(fullid, RRD_ID_LENGTH_MAX, "%s.%s", type, id);
 
-    RRDSET *st = rrdset_find(host, fullid);
+    RRDSET *st = rrdset_find_on_create(host, fullid);
+    if(st) return st;
+
+    rrdhost_wrlock(host);
+
+    st = rrdset_find_on_create(host, fullid);
     if(st) {
-        rrdset_flag_clear(st, RRDSET_FLAG_OBSOLETE);
-        debug(D_RRD_CALLS, "RRDSET '%s', already exists.", fullid);
+        rrdhost_unlock(host);
         return st;
     }
 
@@ -378,11 +400,11 @@ RRDSET *rrdset_create(
     // ------------------------------------------------------------------------
     // get the options from the config, we need to create it
 
-    long rentries = config_get_number(config_section, "history", host->rrd_history_entries);
-    long entries = align_entries_to_pagesize(host->rrd_memory_mode, rentries);
+    long rentries = config_get_number(config_section, "history", history_entries);
+    long entries = align_entries_to_pagesize(memory_mode, rentries);
     if(entries != rentries) entries = config_set_number(config_section, "history", entries);
 
-    if(host->rrd_memory_mode == RRD_MEMORY_MODE_NONE && entries != rentries)
+    if(memory_mode == RRD_MEMORY_MODE_NONE && entries != rentries)
         entries = config_set_number(config_section, "history", 10);
 
     int enabled = config_get_boolean(config_section, "enabled", 1);
@@ -399,14 +421,14 @@ RRDSET *rrdset_create(
     debug(D_RRD_CALLS, "Creating RRD_STATS for '%s.%s'.", type, id);
 
     snprintfz(fullfilename, FILENAME_MAX, "%s/main.db", cache_dir);
-    if(host->rrd_memory_mode == RRD_MEMORY_MODE_SAVE || host->rrd_memory_mode == RRD_MEMORY_MODE_MAP) {
-        st = (RRDSET *) mymmap(fullfilename, size, ((host->rrd_memory_mode == RRD_MEMORY_MODE_MAP) ? MAP_SHARED : MAP_PRIVATE), 0);
+    if(memory_mode == RRD_MEMORY_MODE_SAVE || memory_mode == RRD_MEMORY_MODE_MAP) {
+        st = (RRDSET *) mymmap(fullfilename, size, ((memory_mode == RRD_MEMORY_MODE_MAP) ? MAP_SHARED : MAP_PRIVATE), 0);
         if(st) {
             memset(&st->avl, 0, sizeof(avl));
             memset(&st->avlname, 0, sizeof(avl));
             memset(&st->variables_root_index, 0, sizeof(avl_tree_lock));
             memset(&st->dimensions_index, 0, sizeof(avl_tree_lock));
-            memset(&st->rrdset_rwlock, 0, sizeof(pthread_rwlock_t));
+            memset(&st->rrdset_rwlock, 0, sizeof(netdata_rwlock_t));
 
             st->name = NULL;
             st->type = NULL;
@@ -460,13 +482,13 @@ RRDSET *rrdset_create(
 
             // make sure we have the right memory mode
             // even if we cleared the memory
-            st->rrd_memory_mode = host->rrd_memory_mode;
+            st->rrd_memory_mode = memory_mode;
         }
     }
 
     if(unlikely(!st)) {
         st = callocz(1, size);
-        st->rrd_memory_mode = (host->rrd_memory_mode == RRD_MEMORY_MODE_NONE) ? RRD_MEMORY_MODE_NONE : RRD_MEMORY_MODE_RAM;
+        st->rrd_memory_mode = (memory_mode == RRD_MEMORY_MODE_NONE) ? RRD_MEMORY_MODE_NONE : RRD_MEMORY_MODE_RAM;
     }
 
     st->config_section = strdup(config_section);
@@ -522,8 +544,7 @@ RRDSET *rrdset_create(
     avl_init_lock(&st->dimensions_index, rrddim_compare);
     avl_init_lock(&st->variables_root_index, rrdvar_compare);
 
-    pthread_rwlock_init(&st->rrdset_rwlock, NULL);
-    rrdhost_wrlock(host);
+    netdata_rwlock_init(&st->rrdset_rwlock);
 
     if(name && *name) rrdset_set_name(st, name);
     else rrdset_set_name(st, id);
@@ -567,16 +588,10 @@ RRDSET *rrdset_create(
 // RRDSET - data collection iteration control
 
 inline void rrdset_next_usec_unfiltered(RRDSET *st, usec_t microseconds) {
-
-    if(unlikely(!st->last_collected_time.tv_sec)) {
-        // the first entry
-        microseconds = st->update_every * USEC_PER_SEC;
-    }
-    else if(unlikely(!microseconds)) {
-        // no dt given by the plugin
-        struct timeval now;
-        now_realtime_timeval(&now);
-        microseconds = dt_usec(&now, &st->last_collected_time);
+    if(unlikely(!st->last_collected_time.tv_sec || !microseconds || (st->counter % remote_clock_resync_iterations) == 0)) {
+        // call the full next_usec() function
+        rrdset_next_usec(st, microseconds);
+        return;
     }
 
     st->usec_since_last_update = microseconds;
@@ -596,15 +611,11 @@ inline void rrdset_next_usec(RRDSET *st, usec_t microseconds) {
     }
     else {
         // microseconds has the time since the last collection
-//#ifdef NETDATA_INTERNAL_CHECKS
-//        usec_t now_usec = timeval_usec(&now);
-//        usec_t last_usec = timeval_usec(&st->last_collected_time);
-//#endif
         susec_t since_last_usec = dt_usec_signed(&now, &st->last_collected_time);
 
         if(unlikely(since_last_usec < 0)) {
             // oops! the database is in the future
-            error("Database for chart '%s' on host '%s' is %lld microseconds in the future. Adjusting it to current time.", st->id, st->rrdhost->hostname, -since_last_usec);
+            info("RRD database for chart '%s' on host '%s' is %0.5Lf secs in the future. Adjusting it to current time.", st->id, st->rrdhost->hostname, (long double)-since_last_usec / USEC_PER_SEC);
 
             st->last_collected_time.tv_sec  = now.tv_sec - st->update_every;
             st->last_collected_time.tv_usec = now.tv_usec;
@@ -615,26 +626,11 @@ inline void rrdset_next_usec(RRDSET *st, usec_t microseconds) {
             last_updated_time_align(&st->last_updated, st->update_every);
 
             microseconds    = st->update_every * USEC_PER_SEC;
-            since_last_usec = st->update_every * USEC_PER_SEC;
         }
+        else if(unlikely((usec_t)since_last_usec > (usec_t)(st->update_every * 10 * USEC_PER_SEC))) {
+            // oops! the database is too far behind
+            info("RRD database for chart '%s' on host '%s' is %0.5Lf secs in the past. Adjusting it to current time.", st->id, st->rrdhost->hostname, (long double)since_last_usec / USEC_PER_SEC);
 
-        // verify the microseconds given is good
-        if(unlikely(microseconds > (usec_t)since_last_usec)) {
-            debug(D_RRD_CALLS, "dt %llu usec given is too big - it leads %llu usec to the future, for chart '%s' (%s).", microseconds, microseconds - (usec_t)since_last_usec, st->name, st->id);
-
-//#ifdef NETDATA_INTERNAL_CHECKS
-//            if(unlikely(last_usec + microseconds > now_usec + 1000))
-//                error("dt %llu usec given is too big - it leads %llu usec to the future, for chart '%s' (%s).", microseconds, microseconds - (usec_t)since_last_usec, st->name, st->id);
-//#endif
-
-            microseconds = (usec_t)since_last_usec;
-        }
-        else if(unlikely(microseconds < (usec_t)since_last_usec * 0.8)) {
-            debug(D_RRD_CALLS, "dt %llu usec given is too small - expected %llu usec up to -20%%, for chart '%s' (%s).", microseconds, (usec_t)since_last_usec, st->name, st->id);
-
-//#ifdef NETDATA_INTERNAL_CHECKS
-//            error("dt %llu usec given is too small - expected %llu usec up to -20%%, for chart '%s' (%s).", microseconds, (usec_t)since_last_usec, st->name, st->id);
-//#endif
             microseconds = (usec_t)since_last_usec;
         }
     }
@@ -671,6 +667,14 @@ static inline void rrdset_init_last_updated_time(RRDSET *st) {
 }
 
 static inline void rrdset_done_push_exclusive(RRDSET *st) {
+//    usec_t update_every_ut = st->update_every * USEC_PER_SEC; // st->update_every in microseconds
+//
+//    if(unlikely(st->usec_since_last_update > update_every_ut * remote_clock_resync_iterations)) {
+//        error("Chart '%s' was last collected %llu usec before. Resetting it.", st->id, st->usec_since_last_update);
+//        rrdset_reset(st);
+//        st->usec_since_last_update = update_every_ut;
+//    }
+
     if(unlikely(!st->last_collected_time.tv_sec)) {
         // it is the first entry
         // set the last_collected_time to now
@@ -739,9 +743,10 @@ void rrdset_done(RRDSET *st) {
 
     // check if the chart has a long time to be updated
     if(unlikely(st->usec_since_last_update > st->entries * update_every_ut)) {
-        info("%s: took too long to be updated (%0.3Lf secs). Resetting it.", st->name, (long double)(st->usec_since_last_update / 1000000.0));
+        info("host '%s', chart %s: took too long to be updated (%0.3Lf secs). Resetting it.", st->rrdhost->hostname, st->name, (long double)(st->usec_since_last_update / 1000000.0));
         rrdset_reset(st);
         st->usec_since_last_update = update_every_ut;
+        store_this_entry = 0;
         first_entry = 1;
     }
 
@@ -1017,11 +1022,11 @@ void rrdset_done(RRDSET *st) {
         // this is collected in the same interpolation point
 
         if(unlikely(rrdset_flag_check(st, RRDSET_FLAG_DEBUG)))
-            debug(D_RRD_STATS, "%s: THIS IS IN THE SAME INTERPOLATION POINT", st->name);
+            debug(D_RRD_STATS, "host '%s', chart '%s': THIS IS IN THE SAME INTERPOLATION POINT", st->rrdhost->hostname, st->name);
 
-//#ifdef NETDATA_INTERNAL_CHECKS
-//        info("%s is collected in the same interpolation point: short by %llu microseconds", st->name, next_store_ut - now_collect_ut);
-//#endif
+#ifdef NETDATA_INTERNAL_CHECKS
+        info("INTERNAL CHECK: host '%s', chart '%s' is collected in the same interpolation point: short by %llu microseconds", st->rrdhost->hostname, st->name, next_store_ut - now_collect_ut);
+#endif
     }
 
     usec_t first_ut = last_stored_ut;
@@ -1029,9 +1034,9 @@ void rrdset_done(RRDSET *st) {
     if((now_collect_ut % (update_every_ut)) == 0) iterations++;
 
     for( ; next_store_ut <= now_collect_ut ; last_collect_ut = next_store_ut, next_store_ut += update_every_ut, iterations-- ) {
-//#ifdef NETDATA_INTERNAL_CHECKS
-//        if(iterations < 0) { error("%s: iterations calculation wrapped! first_ut = %llu, last_stored_ut = %llu, next_store_ut = %llu, now_collect_ut = %llu", st->name, first_ut, last_stored_ut, next_store_ut, now_collect_ut); }
-//#endif
+#ifdef NETDATA_INTERNAL_CHECKS
+        if(iterations < 0) { error("INTERNAL CHECK: %s: iterations calculation wrapped! first_ut = %llu, last_stored_ut = %llu, next_store_ut = %llu, now_collect_ut = %llu", st->name, first_ut, last_stored_ut, next_store_ut, now_collect_ut); }
+#endif
 
         if(unlikely(rrdset_flag_check(st, RRDSET_FLAG_DEBUG))) {
             debug(D_RRD_STATS, "%s: last_stored_ut = %0.3Lf (last updated time)", st->name, (long double)last_stored_ut/1000000.0);
@@ -1250,8 +1255,8 @@ void rrdset_done(RRDSET *st) {
             RRDDIM *last;
             // there is dimension to free
             // upgrade our read lock to a write lock
-            pthread_rwlock_unlock(&st->rrdset_rwlock);
-            pthread_rwlock_wrlock(&st->rrdset_rwlock);
+            rrdset_unlock(st);
+            rrdset_wrlock(st);
 
             for( rd = st->dimensions, last = NULL ; likely(rd) ; ) {
                 // remove it only it is not updated in rrd_delete_unupdated_dimensions seconds

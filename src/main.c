@@ -56,6 +56,7 @@ struct netdata_static_thread static_threads[] = {
     {"web",                 NULL,                    NULL,         1, NULL, NULL, socket_listen_main_multi_threaded},
     {"web-single-threaded", NULL,                    NULL,         0, NULL, NULL, socket_listen_main_single_threaded},
     {"push-metrics",        NULL,                    NULL,         0, NULL, NULL, rrdpush_sender_thread},
+    {"statsd",              NULL,                    NULL,         1, NULL, NULL, statsd_main},
     {NULL,                  NULL,                    NULL,         0, NULL, NULL, NULL}
 };
 
@@ -66,14 +67,16 @@ void web_server_threading_selection(void) {
     int single_threaded = (web_server_mode == WEB_SERVER_MODE_SINGLE_THREADED);
 
     int i;
-    for(i = 0; static_threads[i].name ; i++) {
-        if(static_threads[i].start_routine == socket_listen_main_multi_threaded)
+    for (i = 0; static_threads[i].name; i++) {
+        if (static_threads[i].start_routine == socket_listen_main_multi_threaded)
             static_threads[i].enabled = multi_threaded;
 
-        if(static_threads[i].start_routine == socket_listen_main_single_threaded)
+        if (static_threads[i].start_routine == socket_listen_main_single_threaded)
             static_threads[i].enabled = single_threaded;
     }
+}
 
+void web_server_config_options(void) {
     web_client_timeout = (int) config_get_number(CONFIG_SECTION_WEB, "disconnect idle clients after seconds", DEFAULT_DISCONNECT_IDLE_WEB_CLIENTS_AFTER_SECONDS);
 
     respect_web_browser_do_not_track_policy = config_get_boolean(CONFIG_SECTION_WEB, "respect do not track policy", respect_web_browser_do_not_track_policy);
@@ -230,6 +233,7 @@ struct option_def options[] = {
     { 't', "The internal clock of netdata.",              "seconds",     "1"},
     { 'u', "Run as user.",                                "username",    "netdata"},
     { 'v', "Print netdata version and exit.",             NULL,          NULL},
+    { 'V', "Print netdata version and exit.",             NULL,          NULL},
     { 'W', "See Advanced options below.",                 "options",     NULL},
 };
 
@@ -298,6 +302,8 @@ void help(int exitcode) {
             "  -W stacksize=N           Set the stacksize (in bytes).\n\n"
             "  -W debug_flags=N         Set runtime tracing to debug.log.\n\n"
             "  -W unittest              Run internal unittests and exit.\n\n"
+            "  -W set section option value\n"
+            "                           set netdata.conf option from the command line.\n\n"
             "  -W simple-pattern pattern string\n"
             "                           Check if string matches pattern and exit.\n\n"
     );
@@ -365,7 +371,10 @@ static void backwards_compatible_config() {
         web_server_mode = (mode)?WEB_SERVER_MODE_MULTI_THREADED:WEB_SERVER_MODE_SINGLE_THREADED;
     }
 
-    // move [global] options to the [api] section
+    // move [global] options to the [web] section
+    config_move(CONFIG_SECTION_GLOBAL, "http port listen backlog",
+                CONFIG_SECTION_WEB,    "listen backlog");
+
     config_move(CONFIG_SECTION_GLOBAL, "bind socket to IP",
                 CONFIG_SECTION_WEB,    "bind to");
 
@@ -411,12 +420,10 @@ static void get_netdata_configured_variables() {
 
     char buf[HOSTNAME_MAX + 1];
     if(gethostname(buf, HOSTNAME_MAX) == -1)
-        error("WARNING: Cannot get machine hostname.");
+        error("Cannot get machine hostname.");
 
     netdata_configured_hostname = config_get(CONFIG_SECTION_GLOBAL, "hostname", buf);
     debug(D_OPTIONS, "hostname set to '%s'", netdata_configured_hostname);
-
-    netdata_configured_hostname    = config_get(CONFIG_SECTION_GLOBAL, "hostname",    CONFIG_DIR);
 
     // ------------------------------------------------------------------------
     // get default database size
@@ -498,7 +505,9 @@ void set_global_environment() {
 
     // avoid flood calls to stat(/etc/localtime)
     // http://stackoverflow.com/questions/4554271/how-to-avoid-excessive-stat-etc-localtime-calls-in-strftime-on-linux
-    setenv("TZ", ":/etc/localtime", 0);
+    const char *tz = getenv("TZ");
+    if(!tz || !*tz)
+        setenv("TZ", config_get(CONFIG_SECTION_GLOBAL, "TZ environment variable", ":/etc/localtime"), 0);
 
     // set the path we need
     char path[1024 + 1], *p = getenv("PATH");
@@ -614,16 +623,19 @@ int main(int argc, char **argv) {
                     config_set(CONFIG_SECTION_GLOBAL, "run as user", optarg);
                     break;
                 case 'v':
+                case 'V':
                     printf("%s %s\n", program_name, program_version);
                     return 0;
                 case 'W':
                     {
                         char* stacksize_string = "stacksize=";
                         char* debug_flags_string = "debug_flags=";
+
                         if(strcmp(optarg, "unittest") == 0) {
-                            default_rrd_update_every = 1;
-                            default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
-                            if(!config_loaded) config_load(NULL, 0);
+                            if(unit_test_str2ld()) exit(1);
+                            //default_rrd_update_every = 1;
+                            //default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
+                            //if(!config_loaded) config_load(NULL, 0);
                             get_netdata_configured_variables();
                             default_rrd_update_every = 1;
                             default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
@@ -686,9 +698,71 @@ int main(int argc, char **argv) {
                             config_set(CONFIG_SECTION_GLOBAL, "debug flags",  optarg);
                             debug_flags = strtoull(optarg, NULL, 0);
                         }
+                        else if(strcmp(optarg, "set") == 0) {
+                            if(optind + 3 > argc) {
+                                fprintf(stderr, "%s", "\nUSAGE: -W set 'section' 'key' 'value'\n\n"
+                                        " Overwrites settings of netdata.conf.\n"
+                                        "\n"
+                                        " These options interact with: -c netdata.conf\n"
+                                        " If -c netdata.conf is given on the command line,\n"
+                                        " before -W set... the user may overwrite command\n"
+                                        " line parameters at netdata.conf\n"
+                                        " If -c netdata.conf is given after (or missing)\n"
+                                        " -W set... the user cannot overwrite the command line\n"
+                                        " parameters."
+                                        "\n"
+                                );
+                                exit(1);
+                            }
+                            const char *section = argv[optind];
+                            const char *key = argv[optind + 1];
+                            const char *value = argv[optind + 2];
+                            optind += 3;
+
+                            // set this one as the default
+                            // only if it is not already set in the config file
+                            // so the caller can use -c netdata.conf before or
+                            // after this parameter to prevent or allow overwriting
+                            // variables at netdata.conf
+                            config_set_default(section, key,  value);
+
+                            // fprintf(stderr, "SET section '%s', key '%s', value '%s'\n", section, key, value);
+                        }
+                        else if(strcmp(optarg, "get") == 0) {
+                            if(optind + 3 > argc) {
+                                fprintf(stderr, "%s", "\nUSAGE: -W get 'section' 'key' 'value'\n\n"
+                                        " Prints settings of netdata.conf.\n"
+                                        "\n"
+                                        " These options interact with: -c netdata.conf\n"
+                                        " -c netdata.conf has to be given before -W get.\n"
+                                        "\n"
+                                );
+                                exit(1);
+                            }
+
+                            if(!config_loaded) {
+                                fprintf(stderr, "warning: no configuration file has been loaded. Use -c CONFIG_FILE, before -W get. Using default config.\n");
+                                config_load(NULL, 0);
+                            }
+
+                            backwards_compatible_config();
+                            get_netdata_configured_variables();
+
+                            const char *section = argv[optind];
+                            const char *key = argv[optind + 1];
+                            const char *def = argv[optind + 2];
+                            const char *value = config_get(section, key, def);
+                            printf("%s\n", value);
+                            exit(0);
+                        }
+                        else {
+                            fprintf(stderr, "Unknown -W parameter '%s'\n", optarg);
+                            help(1);
+                        }
                     }
                     break;
                 default: /* ? */
+                    fprintf(stderr, "Unknown parameter '%c'\n", opt);
                     help(1);
                     break;
             }
@@ -870,8 +944,10 @@ int main(int argc, char **argv) {
         // --------------------------------------------------------------------
         // create the listening sockets
 
+        web_server_threading_selection();
+
         if(web_server_mode != WEB_SERVER_MODE_NONE)
-            create_listen_sockets();
+            api_listen_sockets_setup();
     }
 
     // initialize the log files
@@ -923,7 +999,7 @@ int main(int argc, char **argv) {
     // ------------------------------------------------------------------------
     // spawn the threads
 
-    web_server_threading_selection();
+    web_server_config_options();
 
     for (i = 0; static_threads[i].name != NULL ; i++) {
         struct netdata_static_thread *st = &static_threads[i];

@@ -6,6 +6,9 @@
 #define DISK_TYPE_PARTITION 2
 #define DISK_TYPE_CONTAINER 3
 
+#define CONFIG_SECTION_DISKSTATS "plugin:proc:/proc/diskstats"
+#define DELAULT_EXLUDED_DISKS "loop* ram*"
+
 static struct disk {
     char *disk;             // the name of the disk (sda, sdb, etc)
     unsigned long major;
@@ -25,8 +28,23 @@ static struct disk {
     int do_util;
     int do_backlog;
 
+    int updated;
+
+    RRDSET *st_avgsz;
+    RRDSET *st_await;
+    RRDSET *st_backlog;
+    RRDSET *st_io;
+    RRDSET *st_iotime;
+    RRDSET *st_mops;
+    RRDSET *st_ops;
+    RRDSET *st_qops;
+    RRDSET *st_svctm;
+    RRDSET *st_util;
+
     struct disk *next;
 } *disk_root = NULL;
+
+#define rrdset_obsolete_and_pointer_null(st) do { if(st) { rrdset_flag_set(st, RRDSET_FLAG_OBSOLETE); st = NULL; } } while(st)
 
 static struct disk *get_disk(unsigned long major, unsigned long minor, char *disk) {
     static char path_to_get_hw_sector_size[FILENAME_MAX + 1] = "";
@@ -46,7 +64,7 @@ static struct disk *get_disk(unsigned long major, unsigned long minor, char *dis
 
     // not found
     // create a new disk structure
-    d = (struct disk *)mallocz(sizeof(struct disk));
+    d = (struct disk *)callocz(1, sizeof(struct disk));
 
     d->disk = strdupz(disk);
     d->major = major;
@@ -73,7 +91,7 @@ static struct disk *get_disk(unsigned long major, unsigned long minor, char *dis
     // get the default path for finding info about the block device
     if(unlikely(!path_find_block_device[0])) {
         snprintfz(buffer, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/sys/dev/block/%lu:%lu/%s");
-        snprintfz(path_find_block_device, FILENAME_MAX, "%s", config_get("plugin:proc:/proc/diskstats", "path to get block device infos", buffer));
+        snprintfz(path_find_block_device, FILENAME_MAX, "%s", config_get(CONFIG_SECTION_DISKSTATS, "path to get block device infos", buffer));
     }
 
     // find if it is a partition
@@ -127,11 +145,11 @@ static struct disk *get_disk(unsigned long major, unsigned long minor, char *dis
 
     if(unlikely(!path_to_get_hw_sector_size[0])) {
         snprintfz(buffer, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/sys/block/%s/queue/hw_sector_size");
-        snprintfz(path_to_get_hw_sector_size, FILENAME_MAX, "%s", config_get("plugin:proc:/proc/diskstats", "path to get h/w sector size", buffer));
+        snprintfz(path_to_get_hw_sector_size, FILENAME_MAX, "%s", config_get(CONFIG_SECTION_DISKSTATS, "path to get h/w sector size", buffer));
     }
     if(unlikely(!path_to_get_hw_sector_size_partitions[0])) {
         snprintfz(buffer, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/sys/dev/block/%lu:%lu/subsystem/%s/../queue/hw_sector_size");
-        snprintfz(path_to_get_hw_sector_size_partitions, FILENAME_MAX, "%s", config_get("plugin:proc:/proc/diskstats", "path to get h/w sector size for partitions", buffer));
+        snprintfz(path_to_get_hw_sector_size_partitions, FILENAME_MAX, "%s", config_get(CONFIG_SECTION_DISKSTATS, "path to get h/w sector size for partitions", buffer));
     }
 
     {
@@ -190,7 +208,7 @@ static inline int is_major_enabled(int major) {
     if(major_configs[major] == -1) {
         char buffer[CONFIG_MAX_NAME + 1];
         snprintfz(buffer, CONFIG_MAX_NAME, "performance metrics for disks with major %d", major);
-        major_configs[major] = (char)config_get_boolean("plugin:proc:/proc/diskstats", buffer, 1);
+        major_configs[major] = (char)config_get_boolean(CONFIG_SECTION_DISKSTATS, buffer, 1);
     }
 
     return (int)major_configs[major];
@@ -212,19 +230,18 @@ int do_proc_diskstats(int update_every, usec_t dt) {
                 globals_initialized = 0;
 
     if(unlikely(!globals_initialized)) {
-        global_enable_new_disks_detected_at_runtime = config_get_boolean("plugin:proc:/proc/diskstats", "enable new disks detected at runtime", global_enable_new_disks_detected_at_runtime);
+        global_enable_new_disks_detected_at_runtime = config_get_boolean(CONFIG_SECTION_DISKSTATS, "enable new disks detected at runtime", global_enable_new_disks_detected_at_runtime);
+        global_enable_performance_for_physical_disks = config_get_boolean_ondemand(CONFIG_SECTION_DISKSTATS, "performance metrics for physical disks", global_enable_performance_for_physical_disks);
+        global_enable_performance_for_virtual_disks = config_get_boolean_ondemand(CONFIG_SECTION_DISKSTATS, "performance metrics for virtual disks", global_enable_performance_for_virtual_disks);
+        global_enable_performance_for_partitions = config_get_boolean_ondemand(CONFIG_SECTION_DISKSTATS, "performance metrics for partitions", global_enable_performance_for_partitions);
 
-        global_enable_performance_for_physical_disks = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "performance metrics for physical disks", global_enable_performance_for_physical_disks);
-        global_enable_performance_for_virtual_disks = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "performance metrics for virtual disks", global_enable_performance_for_virtual_disks);
-        global_enable_performance_for_partitions = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "performance metrics for partitions", global_enable_performance_for_partitions);
-
-        global_do_io      = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "bandwidth for all disks", global_do_io);
-        global_do_ops     = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "operations for all disks", global_do_ops);
-        global_do_mops    = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "merged operations for all disks", global_do_mops);
-        global_do_iotime  = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "i/o time for all disks", global_do_iotime);
-        global_do_qops    = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "queued operations for all disks", global_do_qops);
-        global_do_util    = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "utilization percentage for all disks", global_do_util);
-        global_do_backlog = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "backlog for all disks", global_do_backlog);
+        global_do_io      = config_get_boolean_ondemand(CONFIG_SECTION_DISKSTATS, "bandwidth for all disks", global_do_io);
+        global_do_ops     = config_get_boolean_ondemand(CONFIG_SECTION_DISKSTATS, "operations for all disks", global_do_ops);
+        global_do_mops    = config_get_boolean_ondemand(CONFIG_SECTION_DISKSTATS, "merged operations for all disks", global_do_mops);
+        global_do_iotime  = config_get_boolean_ondemand(CONFIG_SECTION_DISKSTATS, "i/o time for all disks", global_do_iotime);
+        global_do_qops    = config_get_boolean_ondemand(CONFIG_SECTION_DISKSTATS, "queued operations for all disks", global_do_qops);
+        global_do_util    = config_get_boolean_ondemand(CONFIG_SECTION_DISKSTATS, "utilization percentage for all disks", global_do_util);
+        global_do_backlog = config_get_boolean_ondemand(CONFIG_SECTION_DISKSTATS, "backlog for all disks", global_do_backlog);
 
         globals_initialized = 1;
     }
@@ -234,7 +251,7 @@ int do_proc_diskstats(int update_every, usec_t dt) {
     if(unlikely(!ff)) {
         char filename[FILENAME_MAX + 1];
         snprintfz(filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/proc/diskstats");
-        ff = procfile_open(config_get("plugin:proc:/proc/diskstats", "filename to monitor", filename), " \t", PROCFILE_FLAG_DEFAULT);
+        ff = procfile_open(config_get(CONFIG_SECTION_DISKSTATS, "filename to monitor", filename), " \t", PROCFILE_FLAG_DEFAULT);
     }
     if(unlikely(!ff)) return 0;
 
@@ -316,7 +333,7 @@ int do_proc_diskstats(int update_every, usec_t dt) {
         // get a disk structure for the disk
 
         struct disk *d = get_disk(major, minor, disk);
-
+        d->updated = 1;
 
         // --------------------------------------------------------------------------
         // Set its family based on mount point
@@ -329,10 +346,26 @@ int do_proc_diskstats(int update_every, usec_t dt) {
         // Check the configuration for the device
 
         if(unlikely(!d->configured)) {
+            d->configured = 1;
+
+            static SIMPLE_PATTERN *excluded_disks = NULL;
+
+            if(unlikely(!excluded_disks)) {
+                excluded_disks = simple_pattern_create(
+                        config_get(CONFIG_SECTION_DISKSTATS, "exclude disks", DELAULT_EXLUDED_DISKS),
+                        SIMPLE_PATTERN_EXACT
+                );
+            }
+
+            int def_enable = global_enable_new_disks_detected_at_runtime;
+
+            if(def_enable != CONFIG_BOOLEAN_NO && simple_pattern_matches(excluded_disks, disk))
+                def_enable = CONFIG_BOOLEAN_NO;
+
             char var_name[4096 + 1];
             snprintfz(var_name, 4096, "plugin:proc:/proc/diskstats:%s", disk);
 
-            int def_enable = config_get_boolean_ondemand(var_name, "enable", global_enable_new_disks_detected_at_runtime);
+            def_enable = config_get_boolean_ondemand(var_name, "enable", def_enable);
             if(unlikely(def_enable == CONFIG_BOOLEAN_NO)) {
                 // the user does not want any metrics for this disk
                 d->do_io = CONFIG_BOOLEAN_NO;
@@ -405,11 +438,7 @@ int do_proc_diskstats(int update_every, usec_t dt) {
                 d->do_util    = config_get_boolean_ondemand(var_name, "utilization percentage", ddo_util);
                 d->do_backlog = config_get_boolean_ondemand(var_name, "backlog", ddo_backlog);
             }
-
-            d->configured = 1;
         }
-
-        RRDSET *st;
 
         // --------------------------------------------------------------------------
         // Do performance metrics
@@ -417,19 +446,28 @@ int do_proc_diskstats(int update_every, usec_t dt) {
         if(d->do_io == CONFIG_BOOLEAN_YES || (d->do_io == CONFIG_BOOLEAN_AUTO && (readsectors || writesectors))) {
             d->do_io = CONFIG_BOOLEAN_YES;
 
-            st = rrdset_find_bytype_localhost(RRD_TYPE_DISK, disk);
-            if(unlikely(!st)) {
-                st = rrdset_create_localhost(RRD_TYPE_DISK, disk, NULL, family, "disk.io", "Disk I/O Bandwidth"
-                                             , "kilobytes/s", 2000, update_every, RRDSET_TYPE_AREA);
+            if(unlikely(!d->st_io)) {
+                d->st_io = rrdset_create_localhost(
+                        RRD_TYPE_DISK
+                        , disk
+                        , NULL
+                        , family
+                        , "disk.io"
+                        , "Disk I/O Bandwidth"
+                        , "kilobytes/s"
+                        , 2000
+                        , update_every
+                        , RRDSET_TYPE_AREA
+                );
 
-                rrddim_add(st, "reads", NULL, d->sector_size, 1024, RRD_ALGORITHM_INCREMENTAL);
-                rrddim_add(st, "writes", NULL, d->sector_size * -1, 1024, RRD_ALGORITHM_INCREMENTAL);
+                rrddim_add(d->st_io, "reads", NULL, d->sector_size, 1024, RRD_ALGORITHM_INCREMENTAL);
+                rrddim_add(d->st_io, "writes", NULL, d->sector_size * -1, 1024, RRD_ALGORITHM_INCREMENTAL);
             }
-            else rrdset_next(st);
+            else rrdset_next(d->st_io);
 
-            last_readsectors  = rrddim_set(st, "reads", readsectors);
-            last_writesectors = rrddim_set(st, "writes", writesectors);
-            rrdset_done(st);
+            last_readsectors  = rrddim_set(d->st_io, "reads", readsectors);
+            last_writesectors = rrddim_set(d->st_io, "writes", writesectors);
+            rrdset_done(d->st_io);
         }
 
         // --------------------------------------------------------------------
@@ -437,20 +475,30 @@ int do_proc_diskstats(int update_every, usec_t dt) {
         if(d->do_ops == CONFIG_BOOLEAN_YES || (d->do_ops == CONFIG_BOOLEAN_AUTO && (reads || writes))) {
             d->do_ops = CONFIG_BOOLEAN_YES;
 
-            st = rrdset_find_bytype_localhost("disk_ops", disk);
-            if(unlikely(!st)) {
-                st = rrdset_create_localhost("disk_ops", disk, NULL, family, "disk.ops", "Disk Completed I/O Operations"
-                                             , "operations/s", 2001, update_every, RRDSET_TYPE_LINE);
-                rrdset_flag_set(st, RRDSET_FLAG_DETAIL);
+            if(unlikely(!d->st_ops)) {
+                d->st_ops = rrdset_create_localhost(
+                        "disk_ops"
+                        , disk
+                        , NULL
+                        , family
+                        , "disk.ops"
+                        , "Disk Completed I/O Operations"
+                        , "operations/s"
+                        , 2001
+                        , update_every
+                        , RRDSET_TYPE_LINE
+                );
 
-                rrddim_add(st, "reads", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-                rrddim_add(st, "writes", NULL, -1, 1, RRD_ALGORITHM_INCREMENTAL);
+                rrdset_flag_set(d->st_ops, RRDSET_FLAG_DETAIL);
+
+                rrddim_add(d->st_ops, "reads", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+                rrddim_add(d->st_ops, "writes", NULL, -1, 1, RRD_ALGORITHM_INCREMENTAL);
             }
-            else rrdset_next(st);
+            else rrdset_next(d->st_ops);
 
-            last_reads  = rrddim_set(st, "reads", reads);
-            last_writes = rrddim_set(st, "writes", writes);
-            rrdset_done(st);
+            last_reads  = rrddim_set(d->st_ops, "reads", reads);
+            last_writes = rrddim_set(d->st_ops, "writes", writes);
+            rrdset_done(d->st_ops);
         }
 
         // --------------------------------------------------------------------
@@ -458,18 +506,28 @@ int do_proc_diskstats(int update_every, usec_t dt) {
         if(d->do_qops == CONFIG_BOOLEAN_YES || (d->do_qops == CONFIG_BOOLEAN_AUTO && queued_ios)) {
             d->do_qops = CONFIG_BOOLEAN_YES;
 
-            st = rrdset_find_bytype_localhost("disk_qops", disk);
-            if(unlikely(!st)) {
-                st = rrdset_create_localhost("disk_qops", disk, NULL, family, "disk.qops", "Disk Current I/O Operations"
-                                             , "operations", 2002, update_every, RRDSET_TYPE_LINE);
-                rrdset_flag_set(st, RRDSET_FLAG_DETAIL);
+            if(unlikely(!d->st_qops)) {
+                d->st_qops = rrdset_create_localhost(
+                        "disk_qops"
+                        , disk
+                        , NULL
+                        , family
+                        , "disk.qops"
+                        , "Disk Current I/O Operations"
+                        , "operations"
+                        , 2002
+                        , update_every
+                        , RRDSET_TYPE_LINE
+                );
 
-                rrddim_add(st, "operations", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+                rrdset_flag_set(d->st_qops, RRDSET_FLAG_DETAIL);
+
+                rrddim_add(d->st_qops, "operations", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
             }
-            else rrdset_next(st);
+            else rrdset_next(d->st_qops);
 
-            rrddim_set(st, "operations", queued_ios);
-            rrdset_done(st);
+            rrddim_set(d->st_qops, "operations", queued_ios);
+            rrdset_done(d->st_qops);
         }
 
         // --------------------------------------------------------------------
@@ -477,18 +535,28 @@ int do_proc_diskstats(int update_every, usec_t dt) {
         if(d->do_backlog == CONFIG_BOOLEAN_YES || (d->do_backlog == CONFIG_BOOLEAN_AUTO && backlog_ms)) {
             d->do_backlog = CONFIG_BOOLEAN_YES;
 
-            st = rrdset_find_bytype_localhost("disk_backlog", disk);
-            if(unlikely(!st)) {
-                st = rrdset_create_localhost("disk_backlog", disk, NULL, family, "disk.backlog", "Disk Backlog"
-                                             , "backlog (ms)", 2003, update_every, RRDSET_TYPE_AREA);
-                rrdset_flag_set(st, RRDSET_FLAG_DETAIL);
+            if(unlikely(!d->st_backlog)) {
+                d->st_backlog = rrdset_create_localhost(
+                        "disk_backlog"
+                        , disk
+                        , NULL
+                        , family
+                        , "disk.backlog"
+                        , "Disk Backlog"
+                        , "backlog (ms)"
+                        , 2003
+                        , update_every
+                        , RRDSET_TYPE_AREA
+                );
 
-                rrddim_add(st, "backlog", NULL, 1, 10, RRD_ALGORITHM_INCREMENTAL);
+                rrdset_flag_set(d->st_backlog, RRDSET_FLAG_DETAIL);
+
+                rrddim_add(d->st_backlog, "backlog", NULL, 1, 10, RRD_ALGORITHM_INCREMENTAL);
             }
-            else rrdset_next(st);
+            else rrdset_next(d->st_backlog);
 
-            rrddim_set(st, "backlog", backlog_ms);
-            rrdset_done(st);
+            rrddim_set(d->st_backlog, "backlog", backlog_ms);
+            rrdset_done(d->st_backlog);
         }
 
         // --------------------------------------------------------------------
@@ -496,18 +564,28 @@ int do_proc_diskstats(int update_every, usec_t dt) {
         if(d->do_util == CONFIG_BOOLEAN_YES || (d->do_util == CONFIG_BOOLEAN_AUTO && busy_ms)) {
             d->do_util = CONFIG_BOOLEAN_YES;
 
-            st = rrdset_find_bytype_localhost("disk_util", disk);
-            if(unlikely(!st)) {
-                st = rrdset_create_localhost("disk_util", disk, NULL, family, "disk.util", "Disk Utilization Time"
-                                             , "% of time working", 2004, update_every, RRDSET_TYPE_AREA);
-                rrdset_flag_set(st, RRDSET_FLAG_DETAIL);
+            if(unlikely(!d->st_util)) {
+                d->st_util = rrdset_create_localhost(
+                        "disk_util"
+                        , disk
+                        , NULL
+                        , family
+                        , "disk.util"
+                        , "Disk Utilization Time"
+                        , "% of time working"
+                        , 2004
+                        , update_every
+                        , RRDSET_TYPE_AREA
+                );
 
-                rrddim_add(st, "utilization", NULL, 1, 10, RRD_ALGORITHM_INCREMENTAL);
+                rrdset_flag_set(d->st_util, RRDSET_FLAG_DETAIL);
+
+                rrddim_add(d->st_util, "utilization", NULL, 1, 10, RRD_ALGORITHM_INCREMENTAL);
             }
-            else rrdset_next(st);
+            else rrdset_next(d->st_util);
 
-            last_busy_ms = rrddim_set(st, "utilization", busy_ms);
-            rrdset_done(st);
+            last_busy_ms = rrddim_set(d->st_util, "utilization", busy_ms);
+            rrdset_done(d->st_util);
         }
 
         // --------------------------------------------------------------------
@@ -515,20 +593,30 @@ int do_proc_diskstats(int update_every, usec_t dt) {
         if(d->do_mops == CONFIG_BOOLEAN_YES || (d->do_mops == CONFIG_BOOLEAN_AUTO && (mreads || mwrites))) {
             d->do_mops = CONFIG_BOOLEAN_YES;
 
-            st = rrdset_find_bytype_localhost("disk_mops", disk);
-            if(unlikely(!st)) {
-                st = rrdset_create_localhost("disk_mops", disk, NULL, family, "disk.mops", "Disk Merged Operations"
-                                             , "merged operations/s", 2021, update_every, RRDSET_TYPE_LINE);
-                rrdset_flag_set(st, RRDSET_FLAG_DETAIL);
+            if(unlikely(!d->st_mops)) {
+                d->st_mops = rrdset_create_localhost(
+                        "disk_mops"
+                        , disk
+                        , NULL
+                        , family
+                        , "disk.mops"
+                        , "Disk Merged Operations"
+                        , "merged operations/s"
+                        , 2021
+                        , update_every
+                        , RRDSET_TYPE_LINE
+                );
 
-                rrddim_add(st, "reads", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-                rrddim_add(st, "writes", NULL, -1, 1, RRD_ALGORITHM_INCREMENTAL);
+                rrdset_flag_set(d->st_mops, RRDSET_FLAG_DETAIL);
+
+                rrddim_add(d->st_mops, "reads", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+                rrddim_add(d->st_mops, "writes", NULL, -1, 1, RRD_ALGORITHM_INCREMENTAL);
             }
-            else rrdset_next(st);
+            else rrdset_next(d->st_mops);
 
-            rrddim_set(st, "reads", mreads);
-            rrddim_set(st, "writes", mwrites);
-            rrdset_done(st);
+            rrddim_set(d->st_mops, "reads", mreads);
+            rrddim_set(d->st_mops, "writes", mwrites);
+            rrdset_done(d->st_mops);
         }
 
         // --------------------------------------------------------------------
@@ -536,20 +624,30 @@ int do_proc_diskstats(int update_every, usec_t dt) {
         if(d->do_iotime == CONFIG_BOOLEAN_YES || (d->do_iotime == CONFIG_BOOLEAN_AUTO && (readms || writems))) {
             d->do_iotime = CONFIG_BOOLEAN_YES;
 
-            st = rrdset_find_bytype_localhost("disk_iotime", disk);
-            if(unlikely(!st)) {
-                st = rrdset_create_localhost("disk_iotime", disk, NULL, family, "disk.iotime", "Disk Total I/O Time"
-                                             , "milliseconds/s", 2022, update_every, RRDSET_TYPE_LINE);
-                rrdset_flag_set(st, RRDSET_FLAG_DETAIL);
+            if(unlikely(!d->st_iotime)) {
+                d->st_iotime = rrdset_create_localhost(
+                        "disk_iotime"
+                        , disk
+                        , NULL
+                        , family
+                        , "disk.iotime"
+                        , "Disk Total I/O Time"
+                        , "milliseconds/s"
+                        , 2022
+                        , update_every
+                        , RRDSET_TYPE_LINE
+                );
 
-                rrddim_add(st, "reads", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-                rrddim_add(st, "writes", NULL, -1, 1, RRD_ALGORITHM_INCREMENTAL);
+                rrdset_flag_set(d->st_iotime, RRDSET_FLAG_DETAIL);
+
+                rrddim_add(d->st_iotime, "reads", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+                rrddim_add(d->st_iotime, "writes", NULL, -1, 1, RRD_ALGORITHM_INCREMENTAL);
             }
-            else rrdset_next(st);
+            else rrdset_next(d->st_iotime);
 
-            last_readms  = rrddim_set(st, "reads", readms);
-            last_writems = rrddim_set(st, "writes", writems);
-            rrdset_done(st);
+            last_readms  = rrddim_set(d->st_iotime, "reads", readms);
+            last_writems = rrddim_set(d->st_iotime, "writes", writems);
+            rrdset_done(d->st_iotime);
         }
 
         // --------------------------------------------------------------------
@@ -559,57 +657,125 @@ int do_proc_diskstats(int update_every, usec_t dt) {
         if(likely(dt)) {
             if( (d->do_iotime == CONFIG_BOOLEAN_YES || (d->do_iotime == CONFIG_BOOLEAN_AUTO && (readms || writems))) &&
                 (d->do_ops    == CONFIG_BOOLEAN_YES || (d->do_ops    == CONFIG_BOOLEAN_AUTO && (reads || writes)))) {
-                st = rrdset_find_bytype_localhost("disk_await", disk);
-                if(unlikely(!st)) {
-                    st = rrdset_create_localhost("disk_await", disk, NULL, family, "disk.await"
-                                                 , "Average Completed I/O Operation Time", "ms per operation", 2005
-                                                 , update_every, RRDSET_TYPE_LINE);
-                    rrdset_flag_set(st, RRDSET_FLAG_DETAIL);
 
-                    rrddim_add(st, "reads", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-                    rrddim_add(st, "writes", NULL, -1, 1, RRD_ALGORITHM_ABSOLUTE);
+                if(unlikely(!d->st_await)) {
+                    d->st_await = rrdset_create_localhost(
+                            "disk_await"
+                            , disk
+                            , NULL
+                            , family
+                            , "disk.await"
+                            , "Average Completed I/O Operation Time"
+                            , "ms per operation"
+                            , 2005
+                            , update_every
+                            , RRDSET_TYPE_LINE
+                    );
+
+                    rrdset_flag_set(d->st_await, RRDSET_FLAG_DETAIL);
+
+                    rrddim_add(d->st_await, "reads", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+                    rrddim_add(d->st_await, "writes", NULL, -1, 1, RRD_ALGORITHM_ABSOLUTE);
                 }
-                else rrdset_next(st);
+                else rrdset_next(d->st_await);
 
-                rrddim_set(st, "reads", (reads - last_reads) ? (readms - last_readms) / (reads - last_reads) : 0);
-                rrddim_set(st, "writes", (writes - last_writes) ? (writems - last_writems) / (writes - last_writes) : 0);
-                rrdset_done(st);
+                rrddim_set(d->st_await, "reads", (reads - last_reads) ? (readms - last_readms) / (reads - last_reads) : 0);
+                rrddim_set(d->st_await, "writes", (writes - last_writes) ? (writems - last_writems) / (writes - last_writes) : 0);
+                rrdset_done(d->st_await);
             }
 
             if( (d->do_io  == CONFIG_BOOLEAN_YES || (d->do_io  == CONFIG_BOOLEAN_AUTO && (readsectors || writesectors))) &&
                 (d->do_ops == CONFIG_BOOLEAN_YES || (d->do_ops == CONFIG_BOOLEAN_AUTO && (reads || writes)))) {
-                st = rrdset_find_bytype_localhost("disk_avgsz", disk);
-                if(unlikely(!st)) {
-                    st = rrdset_create_localhost("disk_avgsz", disk, NULL, family, "disk.avgsz"
-                                                 , "Average Completed I/O Operation Bandwidth"
-                                                 , "kilobytes per operation", 2006, update_every, RRDSET_TYPE_AREA);
-                    rrdset_flag_set(st, RRDSET_FLAG_DETAIL);
 
-                    rrddim_add(st, "reads", NULL, d->sector_size, 1024, RRD_ALGORITHM_ABSOLUTE);
-                    rrddim_add(st, "writes", NULL, d->sector_size * -1, 1024, RRD_ALGORITHM_ABSOLUTE);
+                if(unlikely(!d->st_avgsz)) {
+                    d->st_avgsz = rrdset_create_localhost(
+                            "disk_avgsz"
+                            , disk
+                            , NULL
+                            , family
+                            , "disk.avgsz"
+                            , "Average Completed I/O Operation Bandwidth"
+                            , "kilobytes per operation"
+                            , 2006
+                            , update_every
+                            , RRDSET_TYPE_AREA
+                    );
+
+                    rrdset_flag_set(d->st_avgsz, RRDSET_FLAG_DETAIL);
+
+                    rrddim_add(d->st_avgsz, "reads", NULL, d->sector_size, 1024, RRD_ALGORITHM_ABSOLUTE);
+                    rrddim_add(d->st_avgsz, "writes", NULL, d->sector_size * -1, 1024, RRD_ALGORITHM_ABSOLUTE);
                 }
-                else rrdset_next(st);
+                else rrdset_next(d->st_avgsz);
 
-                rrddim_set(st, "reads", (reads - last_reads) ? (readsectors - last_readsectors) / (reads - last_reads) : 0);
-                rrddim_set(st, "writes", (writes - last_writes) ? (writesectors - last_writesectors) / (writes - last_writes) : 0);
-                rrdset_done(st);
+                rrddim_set(d->st_avgsz, "reads", (reads - last_reads) ? (readsectors - last_readsectors) / (reads - last_reads) : 0);
+                rrddim_set(d->st_avgsz, "writes", (writes - last_writes) ? (writesectors - last_writesectors) / (writes - last_writes) : 0);
+                rrdset_done(d->st_avgsz);
             }
 
             if( (d->do_util == CONFIG_BOOLEAN_YES || (d->do_util == CONFIG_BOOLEAN_AUTO && busy_ms)) &&
                 (d->do_ops  == CONFIG_BOOLEAN_YES || (d->do_ops  == CONFIG_BOOLEAN_AUTO && (reads || writes)))) {
-                st = rrdset_find_bytype_localhost("disk_svctm", disk);
-                if(unlikely(!st)) {
-                    st = rrdset_create_localhost("disk_svctm", disk, NULL, family, "disk.svctm", "Average Service Time"
-                                                 , "ms per operation", 2007, update_every, RRDSET_TYPE_LINE);
-                    rrdset_flag_set(st, RRDSET_FLAG_DETAIL);
 
-                    rrddim_add(st, "svctm", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+                if(unlikely(!d->st_svctm)) {
+                    d->st_svctm = rrdset_create_localhost(
+                            "disk_svctm"
+                            , disk
+                            , NULL
+                            , family
+                            , "disk.svctm"
+                            , "Average Service Time"
+                            , "ms per operation"
+                            , 2007
+                            , update_every
+                            , RRDSET_TYPE_LINE
+                    );
+
+                    rrdset_flag_set(d->st_svctm, RRDSET_FLAG_DETAIL);
+
+                    rrddim_add(d->st_svctm, "svctm", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
                 }
-                else rrdset_next(st);
+                else rrdset_next(d->st_svctm);
 
-                rrddim_set(st, "svctm", ((reads - last_reads) + (writes - last_writes)) ? (busy_ms - last_busy_ms) / ((reads - last_reads) + (writes - last_writes)) : 0);
-                rrdset_done(st);
+                rrddim_set(d->st_svctm, "svctm", ((reads - last_reads) + (writes - last_writes)) ? (busy_ms - last_busy_ms) / ((reads - last_reads) + (writes - last_writes)) : 0);
+                rrdset_done(d->st_svctm);
             }
+        }
+    }
+
+    // cleanup removed disks
+
+    struct disk *d = disk_root, *last = NULL;
+    while(d) {
+        if(unlikely(!d->updated)) {
+            struct disk *t = d;
+
+            rrdset_obsolete_and_pointer_null(d->st_avgsz);
+            rrdset_obsolete_and_pointer_null(d->st_await);
+            rrdset_obsolete_and_pointer_null(d->st_backlog);
+            rrdset_obsolete_and_pointer_null(d->st_io);
+            rrdset_obsolete_and_pointer_null(d->st_iotime);
+            rrdset_obsolete_and_pointer_null(d->st_mops);
+            rrdset_obsolete_and_pointer_null(d->st_ops);
+            rrdset_obsolete_and_pointer_null(d->st_qops);
+            rrdset_obsolete_and_pointer_null(d->st_svctm);
+            rrdset_obsolete_and_pointer_null(d->st_util);
+
+            if(d == disk_root) {
+                disk_root = d = d->next;
+                last = NULL;
+            }
+            else if(last) {
+                last->next = d = d->next;
+            }
+
+            freez(t->disk);
+            freez(t->mount_point);
+            freez(t);
+        }
+        else {
+            d->updated = 0;
+            last = d;
+            d = d->next;
         }
     }
 

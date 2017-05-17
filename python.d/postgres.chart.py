@@ -99,8 +99,8 @@ SELECT
   sum(conflicts) AS conflicts,
   pg_database_size(datname) AS size
 FROM pg_stat_database
-WHERE NOT datname ~* '^template\d+'
-GROUP BY database_name;
+WHERE datname IN %(databases)s
+GROUP BY datname;
 """,
     BGWRITER="""
 SELECT
@@ -146,7 +146,6 @@ SELECT current_setting('is_superuser') = 'on' AS is_superuser;
 QUERY_STATS = {
     QUERIES['DATABASE']: METRICS['DATABASE'],
     QUERIES['BACKENDS']: METRICS['BACKENDS'],
-    QUERIES['ARCHIVE']: METRICS['ARCHIVE'],
     QUERIES['LOCKS']: METRICS['LOCKS']
 }
 
@@ -242,6 +241,7 @@ class Service(SimpleService):
         self.definitions = deepcopy(CHARTS)
         self.table_stats = configuration.pop('table_stats', False)
         self.index_stats = configuration.pop('index_stats', False)
+        self.database_poll = configuration.pop('database_poll', None)
         self.configuration = configuration
         self.connection = False
         self.is_superuser = False
@@ -281,6 +281,9 @@ class Service(SimpleService):
             is_superuser = check_if_superuser_(cursor, QUERIES['IF_SUPERUSER'])
             cursor.close()
 
+            if (self.database_poll and isinstance(self.database_poll, str)):
+                self.databases = [dbase for dbase in self.databases if dbase in self.database_poll.split()] or self.databases
+
             self.locks_zeroed = populate_lock_types(self.databases)
             self.add_additional_queries_(is_superuser)
             self.create_dynamic_charts_()
@@ -296,6 +299,7 @@ class Service(SimpleService):
             QUERY_STATS[QUERIES['TABLE_STATS']] = METRICS['TABLE_STATS']
         if is_superuser:
             QUERY_STATS[QUERIES['BGWRITER']] = METRICS['BGWRITER']
+            QUERY_STATS[QUERIES['ARCHIVE']] = METRICS['ARCHIVE']
 
     def create_dynamic_charts_(self):
 
@@ -328,7 +332,7 @@ class Service(SimpleService):
             return None
 
     def query_stats_(self, cursor, query, metrics):
-        cursor.execute(query)
+        cursor.execute(query, dict(databases=tuple(self.databases)))
         for row in cursor:
             for metric in metrics:
                 dimension_id = '_'.join([row['database_name'], metric]) if 'database_name' in row else metric

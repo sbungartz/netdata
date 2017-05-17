@@ -273,7 +273,7 @@ struct rrdset {
     char *cache_dir;                                // the directory to store dimensions
     char cache_filename[FILENAME_MAX+1];            // the filename to store this set
 
-    pthread_rwlock_t rrdset_rwlock;                 // protects dimensions linked list
+    netdata_rwlock_t rrdset_rwlock;                 // protects dimensions linked list
 
     size_t counter;                                 // the number of times we added values to this database
     size_t counter_done;                            // the number of times rrdset_done() has been called
@@ -325,9 +325,10 @@ struct rrdset {
 };
 typedef struct rrdset RRDSET;
 
-#define rrdset_rdlock(st) pthread_rwlock_rdlock(&((st)->rrdset_rwlock))
-#define rrdset_wrlock(st) pthread_rwlock_wrlock(&((st)->rrdset_rwlock))
-#define rrdset_unlock(st) pthread_rwlock_unlock(&((st)->rrdset_rwlock))
+#define rrdset_rdlock(st) netdata_rwlock_rdlock(&((st)->rrdset_rwlock))
+#define rrdset_wrlock(st) netdata_rwlock_wrlock(&((st)->rrdset_rwlock))
+#define rrdset_unlock(st) netdata_rwlock_unlock(&((st)->rrdset_rwlock))
+
 
 // ----------------------------------------------------------------------------
 // these loop macros make sure the linked list is accessed with the right lock
@@ -367,6 +368,8 @@ struct rrdhost {
     char *hostname;                                 // the hostname of this host
     uint32_t hash_hostname;                         // the hostname hash
 
+    char *registry_hostname;                        // the registry hostname for this host
+
     char machine_guid[GUID_LEN + 1];                // the unique ID of this host
     uint32_t hash_machine_guid;                     // the hash of the unique ID
 
@@ -375,7 +378,7 @@ struct rrdhost {
     uint32_t flags;                                 // flags about this RRDHOST
 
     int rrd_update_every;                           // the update frequency of the host
-    int rrd_history_entries;                        // the number of history entries for the host's charts
+    long rrd_history_entries;                       // the number of history entries for the host's charts
     RRD_MEMORY_MODE rrd_memory_mode;                // the memory more for the charts of this host
 
     char *cache_dir;                                // the directory to save RRD cache files
@@ -393,7 +396,7 @@ struct rrdhost {
     volatile int rrdpush_error_shown:1;             // 1 when we have logged a communication error
     int rrdpush_socket;                             // the fd of the socket to the remote host, or -1
     pthread_t rrdpush_thread;                       // the sender thread
-    pthread_mutex_t rrdpush_mutex;                  // exclusive access to rrdpush_buffer
+    netdata_mutex_t rrdpush_mutex;                  // exclusive access to rrdpush_buffer
     int rrdpush_pipe[2];                            // collector to sender thread communication
     BUFFER *rrdpush_buffer;                         // collector fills it, sender sends them
 
@@ -439,7 +442,7 @@ struct rrdhost {
     // ------------------------------------------------------------------------
     // locks
 
-    pthread_rwlock_t rrdhost_rwlock;                // lock for this RRDHOST (protects rrdset_root linked list)
+    netdata_rwlock_t rrdhost_rwlock;                // lock for this RRDHOST (protects rrdset_root linked list)
 
     avl_tree_lock rrdset_root_index;                // the host's charts index (by id)
     avl_tree_lock rrdset_root_index_name;           // the host's charts index (by name)
@@ -452,9 +455,9 @@ struct rrdhost {
 typedef struct rrdhost RRDHOST;
 extern RRDHOST *localhost;
 
-#define rrdhost_rdlock(h) pthread_rwlock_rdlock(&((h)->rrdhost_rwlock))
-#define rrdhost_wrlock(h) pthread_rwlock_wrlock(&((h)->rrdhost_rwlock))
-#define rrdhost_unlock(h) pthread_rwlock_unlock(&((h)->rrdhost_rwlock))
+#define rrdhost_rdlock(host) netdata_rwlock_rdlock(&((host)->rrdhost_rwlock))
+#define rrdhost_wrlock(host) netdata_rwlock_wrlock(&((host)->rrdhost_rwlock))
+#define rrdhost_unlock(host) netdata_rwlock_unlock(&((host)->rrdhost_rwlock))
 
 // ----------------------------------------------------------------------------
 // these loop macros make sure the linked list is accessed with the right lock
@@ -469,10 +472,11 @@ extern RRDHOST *localhost;
 // ----------------------------------------------------------------------------
 // global lock for all RRDHOSTs
 
-extern pthread_rwlock_t rrd_rwlock;
-#define rrd_rdlock() pthread_rwlock_rdlock(&rrd_rwlock)
-#define rrd_wrlock() pthread_rwlock_wrlock(&rrd_rwlock)
-#define rrd_unlock() pthread_rwlock_unlock(&rrd_rwlock)
+extern netdata_rwlock_t rrd_rwlock;
+
+#define rrd_rdlock() netdata_rwlock_rdlock(&rrd_rwlock)
+#define rrd_wrlock() netdata_rwlock_wrlock(&rrd_rwlock)
+#define rrd_unlock() netdata_rwlock_unlock(&rrd_rwlock)
 
 // ----------------------------------------------------------------------------
 
@@ -486,10 +490,11 @@ extern RRDHOST *rrdhost_find_by_guid(const char *guid, uint32_t hash);
 
 extern RRDHOST *rrdhost_find_or_create(
         const char *hostname
+        , const char *registry_hostname
         , const char *guid
         , const char *os
         , int update_every
-        , int history
+        , long history
         , RRD_MEMORY_MODE mode
         , int health_enabled
         , int rrdpush_enabled
@@ -497,20 +502,20 @@ extern RRDHOST *rrdhost_find_or_create(
         , char *rrdpush_api_key
 );
 
-#ifdef NETDATA_INTERNAL_CHECKS
-extern void rrdhost_check_wrlock_int(RRDHOST *host, const char *file, const char *function, const unsigned long line);
-extern void rrdhost_check_rdlock_int(RRDHOST *host, const char *file, const char *function, const unsigned long line);
-extern void rrdset_check_rdlock_int(RRDSET *st, const char *file, const char *function, const unsigned long line);
-extern void rrdset_check_wrlock_int(RRDSET *st, const char *file, const char *function, const unsigned long line);
-extern void rrd_check_rdlock_int(const char *file, const char *function, const unsigned long line);
-extern void rrd_check_wrlock_int(const char *file, const char *function, const unsigned long line);
+#if defined(NETDATA_INTERNAL_CHECKS) && defined(NETDATA_VERIFY_LOCKS)
+extern void __rrdhost_check_wrlock(RRDHOST *host, const char *file, const char *function, const unsigned long line);
+extern void __rrdhost_check_rdlock(RRDHOST *host, const char *file, const char *function, const unsigned long line);
+extern void __rrdset_check_rdlock(RRDSET *st, const char *file, const char *function, const unsigned long line);
+extern void __rrdset_check_wrlock(RRDSET *st, const char *file, const char *function, const unsigned long line);
+extern void __rrd_check_rdlock(const char *file, const char *function, const unsigned long line);
+extern void __rrd_check_wrlock(const char *file, const char *function, const unsigned long line);
 
-#define rrdhost_check_rdlock(host) rrdhost_check_rdlock_int(host, __FILE__, __FUNCTION__, __LINE__)
-#define rrdhost_check_wrlock(host) rrdhost_check_wrlock_int(host, __FILE__, __FUNCTION__, __LINE__)
-#define rrdset_check_rdlock(st) rrdset_check_rdlock_int(st, __FILE__, __FUNCTION__, __LINE__)
-#define rrdset_check_wrlock(st) rrdset_check_wrlock_int(st, __FILE__, __FUNCTION__, __LINE__)
-#define rrd_check_rdlock() rrd_check_rdlock_int(__FILE__, __FUNCTION__, __LINE__)
-#define rrd_check_wrlock() rrd_check_wrlock_int(__FILE__, __FUNCTION__, __LINE__)
+#define rrdhost_check_rdlock(host) __rrdhost_check_rdlock(host, __FILE__, __FUNCTION__, __LINE__)
+#define rrdhost_check_wrlock(host) __rrdhost_check_wrlock(host, __FILE__, __FUNCTION__, __LINE__)
+#define rrdset_check_rdlock(st) __rrdset_check_rdlock(st, __FILE__, __FUNCTION__, __LINE__)
+#define rrdset_check_wrlock(st) __rrdset_check_wrlock(st, __FILE__, __FUNCTION__, __LINE__)
+#define rrd_check_rdlock() __rrd_check_rdlock(__FILE__, __FUNCTION__, __LINE__)
+#define rrd_check_wrlock() __rrd_check_wrlock(__FILE__, __FUNCTION__, __LINE__)
 
 #else
 #define rrdhost_check_rdlock(host) (void)0
@@ -526,7 +531,7 @@ extern void rrd_check_wrlock_int(const char *file, const char *function, const u
 
 extern void rrdset_set_name(RRDSET *st, const char *name);
 
-extern RRDSET *rrdset_create(RRDHOST *host
+extern RRDSET *rrdset_create_custom(RRDHOST *host
                              , const char *type
                              , const char *id
                              , const char *name
@@ -536,9 +541,15 @@ extern RRDSET *rrdset_create(RRDHOST *host
                              , const char *units
                              , long priority
                              , int update_every
-                             , RRDSET_TYPE chart_type);
+                             , RRDSET_TYPE chart_type
+                             , RRD_MEMORY_MODE memory_mode
+                             , long history_entries);
 
-#define rrdset_create_localhost(type, id, name, family, context, title, units, priority, update_every, chart_type) rrdset_create(localhost, type, id, name, family, context, title, units, priority, update_every, chart_type)
+#define rrdset_create(host, type, id, name, family, context, title, units, priority, update_every, chart_type) \
+    rrdset_create_custom(host, type, id, name, family, context, title, units, priority, update_every, chart_type, (host)->rrd_memory_mode, (host)->rrd_history_entries)
+
+#define rrdset_create_localhost(type, id, name, family, context, title, units, priority, update_every, chart_type) \
+    rrdset_create(localhost, type, id, name, family, context, title, units, priority, update_every, chart_type)
 
 extern void rrdhost_free_all(void);
 extern void rrdhost_save_all(void);
@@ -564,7 +575,8 @@ extern void rrdset_next_usec(RRDSET *st, usec_t microseconds);
 extern void rrdset_done(RRDSET *st);
 
 // checks if the RRDSET should be offered to viewers
-#define rrdset_is_available_for_viewers(st) (rrdset_flag_check(st, RRDSET_FLAG_ENABLED) && !rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE) && (st)->dimensions)
+#define rrdset_is_available_for_viewers(st) (rrdset_flag_check(st, RRDSET_FLAG_ENABLED) && !rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE) && (st)->dimensions && (st)->rrd_memory_mode != RRD_MEMORY_MODE_NONE)
+#define rrdset_is_available_for_backends(st) (rrdset_flag_check(st, RRDSET_FLAG_ENABLED) && !rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE) && (st)->dimensions)
 
 // get the total duration in seconds of the round robin database
 #define rrdset_duration(st) ((time_t)( (((st)->counter >= ((unsigned long)(st)->entries))?(unsigned long)(st)->entries:(st)->counter) * (st)->update_every ))
@@ -602,7 +614,8 @@ extern void rrdset_done(RRDSET *st);
 // ----------------------------------------------------------------------------
 // RRD DIMENSION functions
 
-extern RRDDIM *rrddim_add(RRDSET *st, const char *id, const char *name, collected_number multiplier, collected_number divisor, RRD_ALGORITHM algorithm);
+extern RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collected_number multiplier, collected_number divisor, RRD_ALGORITHM algorithm, RRD_MEMORY_MODE memory_mode);
+#define rrddim_add(st, id, name, multiplier, divisor, algorithm) rrddim_add_custom(st, id, name, multiplier, divisor, algorithm, (st)->rrd_memory_mode)
 
 extern void rrddim_set_name(RRDSET *st, RRDDIM *rd, const char *name);
 extern RRDDIM *rrddim_find(RRDSET *st, const char *id);

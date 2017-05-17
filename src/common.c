@@ -895,9 +895,8 @@ char *mystrsep(char **ptr, char *s) {
 
 char *trim(char *s) {
     // skip leading spaces
-    // and 'comments' as well!?
     while (*s && isspace(*s)) s++;
-    if (!*s || *s == '#') return NULL;
+    if (!*s) return NULL;
 
     // skip tailing spaces
     // this way is way faster. Writes only one NUL char.
@@ -913,7 +912,41 @@ char *trim(char *s) {
     return s;
 }
 
+inline char *trim_all(char *buffer) {
+    char *d = buffer, *s = buffer;
+
+    // skip spaces
+    while(isspace(*s)) s++;
+
+    while(*s) {
+        // copy the non-space part
+        while(*s && !isspace(*s)) *d++ = *s++;
+
+        // add a space if we have to
+        if(*s && isspace(*s)) {
+            *d++ = ' ';
+            s++;
+        }
+
+        // skip spaces
+        while(isspace(*s)) s++;
+    }
+
+    *d = '\0';
+
+    if(d > buffer) {
+        d--;
+        if(isspace(*d)) *d = '\0';
+    }
+
+    if(!buffer[0]) return NULL;
+    return buffer;
+}
+
 void *mymmap(const char *filename, size_t size, int flags, int ksm) {
+#ifndef MADV_MERGEABLE
+    (void)ksm;
+#endif
     static int log_madvise_1 = 1;
 #ifdef MADV_MERGEABLE
     static int log_madvise_2 = 1, log_madvise_3 = 1;
@@ -1104,7 +1137,7 @@ long get_system_cpus(void) {
     #ifdef __APPLE__
         int32_t tmp_processors;
 
-        if (unlikely(GETSYSCTL("hw.logicalcpu", tmp_processors))) {
+        if (unlikely(GETSYSCTL_BY_NAME("hw.logicalcpu", tmp_processors))) {
             error("Assuming system has %d processors.", processors);
         } else {
             processors = tmp_processors;
@@ -1114,7 +1147,7 @@ long get_system_cpus(void) {
     #elif __FreeBSD__
         int32_t tmp_processors;
 
-        if (unlikely(GETSYSCTL("hw.ncpu", tmp_processors))) {
+        if (unlikely(GETSYSCTL_BY_NAME("hw.ncpu", tmp_processors))) {
             error("Assuming system has %d processors.", processors);
         } else {
             processors = tmp_processors;
@@ -1166,7 +1199,7 @@ pid_t get_system_pid_max(void) {
     #elif __FreeBSD__
         int32_t tmp_pid_max;
 
-        if (unlikely(GETSYSCTL("kern.pid_max", tmp_pid_max))) {
+        if (unlikely(GETSYSCTL_BY_NAME("kern.pid_max", tmp_pid_max))) {
             pid_max = 99999;
             error("Assuming system's maximum pid is %d.", pid_max);
         } else {
@@ -1225,3 +1258,47 @@ unsigned long end_tsc(void) {
     return (((unsigned long)d << 32) | (unsigned long)a) - tsc;
 }
 */
+
+int recursively_delete_dir(const char *path, const char *reason) {
+    DIR *dir = opendir(path);
+    if(!dir) {
+        error("Cannot read %s directory to be deleted '%s'", reason?reason:"", path);
+        return -1;
+    }
+
+    int ret = 0;
+    struct dirent *de = NULL;
+    while((de = readdir(dir))) {
+        if(de->d_type == DT_DIR
+           && (
+                   (de->d_name[0] == '.' && de->d_name[1] == '\0')
+                   || (de->d_name[0] == '.' && de->d_name[1] == '.' && de->d_name[2] == '\0')
+           ))
+            continue;
+
+        char fullpath[FILENAME_MAX + 1];
+        snprintfz(fullpath, FILENAME_MAX, "%s/%s", path, de->d_name);
+
+        if(de->d_type == DT_DIR) {
+            int r = recursively_delete_dir(fullpath, reason);
+            if(r > 0) ret += r;
+            continue;
+        }
+
+        info("Deleting %s file '%s'", reason?reason:"", fullpath);
+        if(unlikely(unlink(fullpath) == -1))
+            error("Cannot delete %s file '%s'", reason?reason:"", fullpath);
+        else
+            ret++;
+    }
+
+    info("Deleting empty directory '%s'", path);
+    if(unlikely(rmdir(path) == -1))
+        error("Cannot delete empty directory '%s'", path);
+    else
+        ret++;
+
+    closedir(dir);
+
+    return ret;
+}

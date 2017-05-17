@@ -32,7 +32,7 @@ static struct proc_module {
 
         // network metrics
         { .name = "/proc/net/dev", .dim = "netdev", .func = do_proc_net_dev },
-        { .name = "/proc/net/netstat", .dim = "netstat", .func = do_proc_net_netstat },
+        { .name = "/proc/net/netstat", .dim = "netstat", .func = do_proc_net_netstat }, // this has to be before /proc/net/snmp, because there is a shared metric
         { .name = "/proc/net/snmp", .dim = "snmp", .func = do_proc_net_snmp },
         { .name = "/proc/net/snmp6", .dim = "snmp6", .func = do_proc_net_snmp6 },
         { .name = "/proc/net/softnet_stat", .dim = "softnet", .func = do_proc_net_softnet_stat },
@@ -48,6 +48,9 @@ static struct proc_module {
         // NFS metrics
         { .name = "/proc/net/rpc/nfsd", .dim = "nfsd", .func = do_proc_net_rpc_nfsd },
         { .name = "/proc/net/rpc/nfs", .dim = "nfs", .func = do_proc_net_rpc_nfs },
+
+        // ZFS metrics
+        { .name = "/proc/spl/kstat/zfs/arcstats", .dim = "zfs_arcstats", .func = do_proc_spl_kstat_zfs_arcstats },
 
         // IPC metrics
         { .name = "ipc", .dim = "ipc", .func = do_ipc },

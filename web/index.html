@@ -601,6 +601,8 @@
             var len, i, url, hostname, icon;
 
             if(options.hosts.length > 1) {
+                // there are mirrored hosts here
+
                 el += '<li><a href="#" onClick="return false;" style="color: #666;" target="_blank">databases available on this host</a></li>';
                 a1 += '<li><a href="#" onClick="return false;"><i class="fa fa-info-circle" aria-hidden="true" style="color: #666;"></i></a></li>';
 
@@ -611,11 +613,19 @@
                 if(base.endsWith("/"))
                     base = base.substring(0, base.length - 1);
 
+                var master = options.hosts[0].hostname;
+                var sorted = options.hosts.sort(function(a, b) {
+                    if(a.hostname === master) return -1;
+                    if(a.hostname === b.hostname) return 0;
+                    else if(a.hostname > b.hostname) return 1;
+                    return -1;
+                });
+
                 i = 0;
-                len = options.hosts.length;
+                len = sorted.length;
                 while(len--) {
-                    hostname = options.hosts[i].hostname;
-                    if(i == 0) {
+                    hostname = sorted[i].hostname;
+                    if(hostname === master) {
                         url = base + "/";
                         icon = "home";
                     }
@@ -926,6 +936,8 @@
         };
 
         function chartsPerRow(total) {
+            void(total);
+
             if(options.chartsPerRow === 0) {
                 return 1;
                 //var width = Math.floor(total / options.chartsMinWidth);
@@ -970,10 +982,10 @@
         // scroll to a section, without changing the browser history
 
         function scrollToId(hash) {
-            if(hash && hash != '' && document.getElementById(hash) !== null) {
+            if(hash && hash !== '' && document.getElementById(hash) !== null) {
                 var offset = $('#' + hash).offset();
                 if(typeof offset !== 'undefined')
-                    $('html, body').animate({ scrollTop: offset.top }, 0);
+                    $('html, body').animate({ scrollTop: offset.top - 30 }, 0);
             }
 
             // we must return false to prevent the default action
@@ -982,6 +994,14 @@
 
         // ----------------------------------------------------------------------------
 
+        // user editable information
+        var customDashboard = {
+            menu: {},
+            submenu: {},
+            context: {}
+        };
+
+        // netdata standard information
         var netdataDashboard = {
             sparklines_registry: {},
             os: 'unknown',
@@ -1146,6 +1166,7 @@
                 case 'ap':
                 case 'net':
                 case 'disk':
+                case 'statsd':
                     chart.menu = tmp;
                     break;
 
@@ -1153,12 +1174,16 @@
                     chart.menu = chart.type;
                     if(parts.length > 2 && parts[1] === 'cache')
                         chart.menu_pattern = tmp + '_' + parts[1];
+                    else if(parts.length > 1)
+                        chart.menu_pattern = tmp;
                     break;
 
                 case 'bind':
                     chart.menu = chart.type;
                     if(parts.length > 2 && parts[1] === 'rndc')
                         chart.menu_pattern = tmp + '_' + parts[1];
+                    else if(parts.length > 1)
+                        chart.menu_pattern = tmp;
                     break;
 
                 case 'cgroup':
@@ -1173,12 +1198,16 @@
                     chart.menu = chart.type;
                     if(parts.length > 2 && parts[1] === 'dhcpd')
                         chart.menu_pattern = tmp + '_' + parts[1];
+                    else if(parts.length > 1)
+                        chart.menu_pattern = tmp;
                     break;
 
                 case 'ovpn':
                     chart.menu = chart.type;
                     if(parts.length > 3 && parts[1] === 'status' && parts[2] === 'log')
                         chart.menu_pattern = tmp + '_' + parts[1];
+                    else if(parts.length > 1)
+                        chart.menu_pattern = tmp;
                     break;
 
                 case 'smartd':
@@ -1186,28 +1215,8 @@
                     chart.menu = chart.type;
                     if(parts.length > 2 && parts[1] === 'log')
                         chart.menu_pattern = tmp + '_' + parts[1];
-                    break;
-
-                case 'dovecot':
-                case 'exim':
-                case 'hddtemp':
-                case 'ipfs':
-                case 'memcached':
-                case 'mysql':
-                case 'named':
-                case 'nginx':
-                case 'nut':
-                case 'phpfpm':
-                case 'postfix':
-                case 'postgres':
-                case 'redis':
-                case 'retroshare':
-                case 'smawebbox':
-                case 'snmp':
-                case 'squid':
-                case 'tomcat':
-                    chart.menu = chart.type;
-                    chart.menu_pattern = tmp;
+                    else if(parts.length > 1)
+                        chart.menu_pattern = tmp;
                     break;
 
                 case 'tc':
@@ -1238,6 +1247,8 @@
 
                 default:
                     chart.menu = chart.type;
+                    if(parts.length > 1)
+                        chart.menu_pattern = tmp;
                     break;
             }
 
@@ -1459,6 +1470,22 @@
                         mhead += generateHeadCharts('mainheads', chart, duration);
                         head += generateHeadCharts('heads', chart, duration);
 
+                        function chartCommonMin(family, context, units) {
+                            var x = netdataDashboard.anyAttribute(netdataDashboard.context, 'commonMin', context, undefined);
+                            if(typeof x !== 'undefined')
+                                return ' data-common-min="' + family + '/' + context + '/' + units + '"';
+                            else
+                                return '';
+                        }
+
+                        function chartCommonMax(family, context, units) {
+                            var x = netdataDashboard.anyAttribute(netdataDashboard.context, 'commonMax', context, undefined);
+                            if(typeof x !== 'undefined')
+                                return ' data-common-max="' + family + '/' + context + '/' + units + '"';
+                            else
+                                return '';
+                        }
+
                         // generate the chart
                         chtml += netdataDashboard.contextInfo(chart.context) + '<div id="chart_' + NETDATA.name2id(chart.id) + '" data-netdata="' + chart.id + '"'
                             + ' data-width="' + pcent_width.toString() + '%"'
@@ -1468,6 +1495,8 @@
                             + ' data-after="-' + duration.toString() + '"'
                             + ' data-id="' + NETDATA.name2id(options.hostname + '/' + chart.id) + '"'
                             + ' data-colors="' + netdataDashboard.anyAttribute(netdataDashboard.context, 'colors', chart.context, '') + '"'
+                            + chartCommonMin(chart.family, chart.context, chart.units)
+                            + chartCommonMax(chart.family, chart.context, chart.units)
                             + ' role="application"></div>';
 
                         // console.log('         \------- ' + chart.id + ' (' + chart.priority + '): ' + chart.context  + ' height: ' + menus[menu].submenus[submenu].height);
@@ -1484,7 +1513,7 @@
 
             sidebar += '<li class="" style="padding-top:15px;"><a href="https://github.com/firehol/netdata/wiki/Add-more-charts-to-netdata" target="_blank"><i class="fa fa-plus" aria-hidden="true"></i> add more charts</a></li>';
             sidebar += '<li class=""><a href="https://github.com/firehol/netdata/wiki/Add-more-alarms-to-netdata" target="_blank"><i class="fa fa-plus" aria-hidden="true"></i> add more alarms</a></li>';
-            sidebar += '<li class="" style="margin:20px;color:#666;"><small>netdata on <b>' + data.hostname.toString() + '</b>, collects every ' + ((data.update_every == 1)?'second':data.update_every.toString() + ' seconds') + ' <b>' + data.dimensions_count.toLocaleString() + '</b> metrics, presented as <b>' + data.charts_count.toLocaleString() + '</b> charts and monitored by <b>' + data.alarms_count.toLocaleString() + '</b> alarms, using ' + Math.round(data.rrd_memory_bytes / 1024 / 1024).toLocaleString() + ' MB of memory for ' + seconds4human(data.update_every * data.history) + ' of real-time history.<br/>&nbsp;<br/><b>netdata</b><br/>v' +  data.version.toString() +'</small></li>';
+            sidebar += '<li class="" style="margin:20px;color:#666;"><small>netdata on <b>' + data.hostname.toString() + '</b>, collects every ' + ((data.update_every === 1)?'second':data.update_every.toString() + ' seconds') + ' <b>' + data.dimensions_count.toLocaleString() + '</b> metrics, presented as <b>' + data.charts_count.toLocaleString() + '</b> charts and monitored by <b>' + data.alarms_count.toLocaleString() + '</b> alarms, using ' + Math.round(data.rrd_memory_bytes / 1024 / 1024).toLocaleString() + ' MB of memory for ' + seconds4human(data.update_every * data.history) + ' of real-time history.<br/>&nbsp;<br/><b>netdata</b><br/>v' +  data.version.toString() +'</small></li>';
             sidebar += '</ul>';
             div.innerHTML = html;
             document.getElementById('sidebar').innerHTML = sidebar;
@@ -1632,7 +1661,7 @@
                     var t = new Date(timestamp * 1000);
                     var now = new Date();
 
-                    if(t.toDateString() == now.toDateString())
+                    if(t.toDateString() === now.toDateString())
                         return t.toLocaleTimeString();
 
                     return t.toLocaleDateString() + space + t.toLocaleTimeString();
@@ -1689,8 +1718,8 @@
                     }
 
                     var delay = '';
-                    if((alarm.delay_up_duration > 0 || alarm.delay_down_duration > 0) && alarm.delay_multiplier != 0 && alarm.delay_max_duration > 0) {
-                        if(alarm.delay_up_duration == alarm.delay_down_duration) {
+                    if((alarm.delay_up_duration > 0 || alarm.delay_down_duration > 0) && alarm.delay_multiplier !== 0 && alarm.delay_max_duration > 0) {
+                        if(alarm.delay_up_duration === alarm.delay_down_duration) {
                             delay += '<small><br/>hysteresis ' + seconds4human(alarm.delay_up_duration, { negative_suffix: '' });
                         }
                         else {
@@ -1702,7 +1731,7 @@
                                 delay += 'on&nbsp;recovery&nbsp;<code>' + seconds4human(alarm.delay_down_duration, { negative_suffix: '' }) + '</code>, ';
                             }
                         }
-                        if(alarm.delay_multiplier != 1.0) {
+                        if(alarm.delay_multiplier !== 1.0) {
                             delay += 'multiplied&nbsp;by&nbsp;<code>' + alarm.delay_multiplier.toString() + '</code>';
                             delay += ',&nbsp;up&nbsp;to&nbsp;<code>' + seconds4human(alarm.delay_max_duration, { negative_suffix: '' }) + '</code>';
                         }
@@ -2266,7 +2295,7 @@
             if(hours > 1) txt += hours.toString() + options.space + options.hours;
             else if(hours === 1) txt += hours.toString() + options.space + options.hour;
 
-            if(hours > 0 && minutes > 0 && seconds == 0)
+            if(hours > 0 && minutes > 0 && seconds === 0)
                 txt += options.space + options.and + options.space;
             else if(hours > 0 && minutes > 0 && seconds > 0)
                 txt += ',' + options.space;
@@ -2299,12 +2328,49 @@
                 document.getElementById('alarms_count_badge').innerHTML = '';
         }
 
+        function initializeDynamicDashboardWithData(data) {
+            if(data !== null) {
+                options.hostname = data.hostname;
+                options.data = data;
+                options.version = data.version;
+                netdataDashboard.os = data.os;
+
+                if(typeof data.hosts !=='undefined')
+                    options.hosts = data.hosts;
+
+                // update the dashboard hostname
+                document.getElementById('hostname').innerHTML = options.hostname;
+                document.getElementById('hostname').href = NETDATA.serverDefault;
+                document.getElementById('netdataVersion').innerHTML = options.version;
+
+                // update the dashboard title
+                document.title = options.hostname + ' netdata dashboard';
+
+                // close the splash screen
+                $("#loadOverlay").css("display","none");
+
+                // create a chart_by_name index
+                data.charts_by_name = {};
+                var charts = data.charts;
+                var x;
+                for(x in charts) {
+                    if(!charts.hasOwnProperty(x)) continue;
+
+                    var chart = charts[x];
+                    data.charts_by_name[chart.name] = chart;
+                }
+
+                // render all charts
+                renderChartsAndMenu(data);
+            }
+        }
+
         function initializeDynamicDashboard(netdata_url) {
             if(typeof netdata_url === 'undefined' || netdata_url === null)
                 netdata_url = NETDATA.serverDefault;
 
             // initialize clickable alarms
-            NETDATA.alarms.chart_div_offset = 100;
+            NETDATA.alarms.chart_div_offset = -50;
             NETDATA.alarms.chart_div_id_prefix = 'chart_';
             NETDATA.alarms.chart_div_animation_duration = 0;
 
@@ -2314,38 +2380,15 @@
                 // download all the charts the server knows
                 NETDATA.chartRegistry.downloadAll(netdata_url, function(data) {
                     if(data !== null) {
-                        options.hostname = data.hostname;
-                        options.data = data;
-                        options.version = data.version;
-                        netdataDashboard.os = data.os;
-
-                        if(typeof data.hosts != 'undefined')
-                            options.hosts = data.hosts;
-
-                        // update the dashboard hostname
-                        document.getElementById('hostname').innerHTML = options.hostname;
-                        document.getElementById('hostname').href = NETDATA.serverDefault;
-                        document.getElementById('netdataVersion').innerHTML = options.version;
-
-                        // update the dashboard title
-                        document.title = options.hostname + ' netdata dashboard';
-
-                        // close the splash screen
-                        $("#loadOverlay").css("display","none");
-
-                        // create a chart_by_name index
-                        data.charts_by_name = {};
-                        var charts = data.charts;
-                        var x;
-                        for(x in charts) {
-                            if(!charts.hasOwnProperty(x)) continue;
-
-                            var chart = charts[x];
-                            data.charts_by_name[chart.name] = chart;
+                        if(typeof data.custom_info !== 'undefined' && data.custom_info !== "") {
+                            loadJs(data.custom_info, function () {
+                                $.extend(true, netdataDashboard, customDashboard);
+                                initializeDynamicDashboardWithData(data);
+                            });
                         }
-
-                        // render all charts
-                        renderChartsAndMenu(data);
+                        else {
+                            initializeDynamicDashboardWithData(data);
+                        }
                     }
                 });
             });
@@ -2361,7 +2404,7 @@
             var s = options.version.split('-');
 
             if(s.length !== 3) return null;
-            if(s[2][0] == 'g') {
+            if(s[2][0] === 'g') {
                 var v = s[2].split('_')[0].substring(1, 8);
                 if(v.length === 7) {
                     versionLog('Installed git commit id of netdata is ' + v);
@@ -2565,17 +2608,17 @@
                             var tagName = null;
 
                             for (var i = 0, r = 0; r <= config.showChars; i++) {
-                                if (content[i] == '<' && !inTag) {
+                                if (content[i] === '<' && !inTag) {
                                     inTag = true;
 
                                     // This could be "tag" or "/tag"
                                     tagName = content.substring(i + 1, content.indexOf('>', i));
 
                                     // If its a closing tag
-                                    if (tagName[0] == '/') {
+                                    if (tagName[0] === '/') {
 
 
-                                        if (tagName != '/' + openTags[0]) {
+                                        if (tagName !== ('/' + openTags[0])) {
                                             config.errMsg = 'ERROR en HTML: the top of the stack should be the tag that closes';
                                         } else {
                                             openTags.shift(); // Pops the last tag from the open tag stack (the tag is closed in the retult HTML!)
@@ -2583,12 +2626,12 @@
 
                                     } else {
                                         // There are some nasty tags that don't have a close tag like <br/>
-                                        if (tagName.toLowerCase() != 'br') {
+                                        if (tagName.toLowerCase() !== 'br') {
                                             openTags.unshift(tagName); // Add to start the name of the tag that opens
                                         }
                                     }
                                 }
-                                if (inTag && content[i] == '>') {
+                                if (inTag && content[i] === '>') {
                                     inTag = false;
                                 }
 
@@ -2674,10 +2717,11 @@
 
             // change the URL based on the current position of the screen
             $sidebar.on('activate.bs.scrollspy', function (e) {
-                // console.log(e);
+                //console.log(e);
                 var el = $(e.target);
-                //if(el.find('ul').size() == 0) {
+                //if(el.find('ul').size() === 0) {
                 var hash = el.find('a').attr('href');
+                // console.log(hash);
                 if(typeof hash === 'string' && hash.substring(0, 1) === '#' && urlOptions.hash.startsWith(hash + '_submenu_') === false) {
                     urlOptions.hash = hash;
                     //console.log(urlOptions.hash);
@@ -2894,7 +2938,7 @@
             });
 
             NETDATA.requiredJs.push({
-                url: NETDATA.serverDefault + 'dashboard_info.js?v20170213-2',
+                url: NETDATA.serverDefault + 'dashboard_info.js?v20170427-1',
                 async: false,
                 isAlreadyLoaded: function() { return false; }
             });
@@ -3522,4 +3566,4 @@
     </div>
 </body>
 </html>
-<script type="text/javascript" src="dashboard.js?v20170211-2"></script>
+<script type="text/javascript" src="dashboard.js?v20170514-1"></script>

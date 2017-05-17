@@ -36,7 +36,7 @@ struct section {
     struct config_option *values;
     avl_tree_lock values_index;
 
-    pthread_mutex_t mutex;  // this locks only the writers, to ensure atomic updates
+    netdata_mutex_t mutex;  // this locks only the writers, to ensure atomic updates
                             // readers are protected using the rwlock in avl_tree_lock
 };
 
@@ -44,7 +44,7 @@ static int appconfig_section_compare(void *a, void *b);
 
 struct config netdata_config = {
         .sections = NULL,
-        .mutex = PTHREAD_MUTEX_INITIALIZER,
+        .mutex = NETDATA_MUTEX_INITIALIZER,
         .index = {
             { NULL, appconfig_section_compare },
             AVL_LOCK_INITIALIZER
@@ -53,7 +53,7 @@ struct config netdata_config = {
 
 struct config stream_config = {
         .sections = NULL,
-        .mutex = PTHREAD_MUTEX_INITIALIZER,
+        .mutex = NETDATA_MUTEX_INITIALIZER,
         .index = {
                 { NULL, appconfig_section_compare },
                 AVL_LOCK_INITIALIZER
@@ -64,19 +64,19 @@ struct config stream_config = {
 // locking
 
 static inline void appconfig_wrlock(struct config *root) {
-    pthread_mutex_lock(&root->mutex);
+    netdata_mutex_lock(&root->mutex);
 }
 
 static inline void appconfig_unlock(struct config *root) {
-    pthread_mutex_unlock(&root->mutex);
+    netdata_mutex_unlock(&root->mutex);
 }
 
 static inline void config_section_wrlock(struct section *co) {
-    pthread_mutex_lock(&co->mutex);
+    netdata_mutex_lock(&co->mutex);
 }
 
 static inline void config_section_unlock(struct section *co) {
-    pthread_mutex_unlock(&co->mutex);
+    netdata_mutex_unlock(&co->mutex);
 }
 
 
@@ -135,6 +135,7 @@ static inline struct section *appconfig_section_create(struct config *root, cons
     struct section *co = callocz(1, sizeof(struct section));
     co->name = strdupz(section);
     co->hash = simple_hash(co->name);
+    netdata_mutex_init(&co->mutex);
 
     avl_init_lock(&co->values_index, appconfig_option_compare);
 
@@ -294,6 +295,17 @@ long long appconfig_get_number(struct config *root, const char *section, const c
     return strtoll(s, NULL, 0);
 }
 
+long double appconfig_get_float(struct config *root, const char *section, const char *name, long double value)
+{
+    char buffer[100], *s;
+    sprintf(buffer, "%0.5Lf", value);
+
+    s = appconfig_get(root, section, name, buffer);
+    if(!s) return value;
+
+    return str2ld(s, NULL);
+}
+
 int appconfig_get_boolean(struct config *root, const char *section, const char *name, int value)
 {
     char *s;
@@ -337,7 +349,7 @@ const char *appconfig_set_default(struct config *root, const char *section, cons
 {
     struct config_option *cv;
 
-    debug(D_CONFIG, "request to set config in section '%s', name '%s', value '%s'", section, name, value);
+    debug(D_CONFIG, "request to set default config in section '%s', name '%s', value '%s'", section, name, value);
 
     struct section *co = appconfig_section_find(root, section);
     if(!co) return appconfig_set(root, section, name, value);
@@ -393,6 +405,16 @@ long long appconfig_set_number(struct config *root, const char *section, const c
     return value;
 }
 
+long double appconfig_set_float(struct config *root, const char *section, const char *name, long double value)
+{
+    char buffer[100];
+    sprintf(buffer, "%0.5Lf", value);
+
+    appconfig_set(root, section, name, buffer);
+
+    return value;
+}
+
 int appconfig_set_boolean(struct config *root, const char *section, const char *name, int value)
 {
     char *s;
@@ -417,11 +439,11 @@ int appconfig_load(struct config *root, char *filename, int overwrite_used)
 
     if(!filename) filename = CONFIG_DIR "/" CONFIG_FILENAME;
 
-    debug(D_CONFIG, "Opening config file '%s'", filename);
+    debug(D_CONFIG, "CONFIG: opening config file '%s'", filename);
 
     FILE *fp = fopen(filename, "r");
     if(!fp) {
-        error("Cannot open file '%s'", filename);
+        error("CONFIG: cannot open file '%s'", filename);
         return 0;
     }
 
@@ -430,8 +452,8 @@ int appconfig_load(struct config *root, char *filename, int overwrite_used)
         line++;
 
         s = trim(buffer);
-        if(!s) {
-            debug(D_CONFIG, "Ignoring line %d, it is empty.", line);
+        if(!s || *s == '#') {
+            debug(D_CONFIG, "CONFIG: ignoring line %d of file '%s', it is empty.", line, filename);
             continue;
         }
 
@@ -449,14 +471,14 @@ int appconfig_load(struct config *root, char *filename, int overwrite_used)
 
         if(!co) {
             // line outside a section
-            error("Ignoring line %d ('%s'), it is outside all sections.", line, s);
+            error("CONFIG: ignoring line %d ('%s') of file '%s', it is outside all sections.", line, s, filename);
             continue;
         }
 
         char *name = s;
         char *value = strchr(s, '=');
         if(!value) {
-            error("Ignoring line %d ('%s'), there is no = in it.", line, s);
+            error("CONFIG: ignoring line %d ('%s') of file '%s', there is no = in it.", line, s, filename);
             continue;
         }
         *value = '\0';
@@ -465,12 +487,12 @@ int appconfig_load(struct config *root, char *filename, int overwrite_used)
         name = trim(name);
         value = trim(value);
 
-        if(!name) {
-            error("Ignoring line %d, name is empty.", line);
+        if(!name || *name == '#') {
+            error("CONFIG: ignoring line %d of file '%s', name is empty.", line, filename);
             continue;
         }
         if(!value) {
-            debug(D_CONFIG, "Ignoring line %d, value is empty.", line);
+            debug(D_CONFIG, "CONFIG: ignoring line %d of file '%s', value is empty.", line, filename);
             continue;
         }
 
@@ -479,12 +501,12 @@ int appconfig_load(struct config *root, char *filename, int overwrite_used)
         if(!cv) cv = appconfig_value_create(co, name, value);
         else {
             if(((cv->flags & CONFIG_VALUE_USED) && overwrite_used) || !(cv->flags & CONFIG_VALUE_USED)) {
-                debug(D_CONFIG, "Line %d, overwriting '%s/%s'.", line, co->name, cv->name);
+                debug(D_CONFIG, "CONFIG: line %d of file '%s', overwriting '%s/%s'.", line, filename, co->name, cv->name);
                 freez(cv->value);
                 cv->value = strdupz(value);
             }
             else
-                debug(D_CONFIG, "Ignoring line %d, '%s/%s' is already present and used.", line, co->name, cv->name);
+                debug(D_CONFIG, "CONFIG: ignoring line %d of file '%s', '%s/%s' is already present and used.", line, filename, co->name, cv->name);
         }
         cv->flags |= CONFIG_VALUE_LOADED;
     }
@@ -531,6 +553,7 @@ void appconfig_generate(struct config *root, BUFFER *wb, int only_changed)
         for(co = root->sections; co ; co = co->next) {
             if(!strcmp(co->name, CONFIG_SECTION_GLOBAL)
                || !strcmp(co->name, CONFIG_SECTION_WEB)
+               || !strcmp(co->name, CONFIG_SECTION_STATSD)
                || !strcmp(co->name, CONFIG_SECTION_PLUGINS)
                || !strcmp(co->name, CONFIG_SECTION_REGISTRY)
                || !strcmp(co->name, CONFIG_SECTION_HEALTH)
@@ -558,7 +581,7 @@ void appconfig_generate(struct config *root, BUFFER *wb, int only_changed)
                 if(only_changed && !changed) continue;
 
                 if(!used) {
-                    buffer_sprintf(wb, "\n# node '%s' is not used.", co->name);
+                    buffer_sprintf(wb, "\n# section '%s' is not used.", co->name);
                 }
 
                 buffer_sprintf(wb, "\n[%s]\n", co->name);

@@ -78,25 +78,30 @@ void rrd_stats_api_v1_chart(RRDSET *st, BUFFER *wb) {
     rrd_stats_api_v1_chart_with_data(st, wb, NULL, NULL);
 }
 
-void rrd_stats_api_v1_charts(RRDHOST *host, BUFFER *wb)
-{
+void rrd_stats_api_v1_charts(RRDHOST *host, BUFFER *wb) {
+    static char *custom_dashboard_info_js_filename = NULL;
     size_t c, dimensions = 0, memory = 0, alarms = 0;
     RRDSET *st;
 
     time_t now = now_realtime_sec();
+
+    if(unlikely(!custom_dashboard_info_js_filename))
+        custom_dashboard_info_js_filename = config_get(CONFIG_SECTION_WEB, "custom dashboard_info.js", "");
 
     buffer_sprintf(wb, "{\n"
            "\t\"hostname\": \"%s\""
         ",\n\t\"version\": \"%s\""
         ",\n\t\"os\": \"%s\""
         ",\n\t\"update_every\": %d"
-        ",\n\t\"history\": %d"
+        ",\n\t\"history\": %ld"
+        ",\n\t\"custom_info\": \"%s\""
         ",\n\t\"charts\": {"
         , host->hostname
         , program_version
         , host->os
         , host->rrd_update_every
         , host->rrd_history_entries
+        , custom_dashboard_info_js_filename
         );
 
     c = 0;
@@ -181,7 +186,7 @@ static inline size_t prometheus_name_copy(char *d, const char *s, size_t usable)
 
 #define PROMETHEUS_ELEMENT_MAX 256
 
-void rrd_stats_api_v1_charts_allmetrics_prometheus(RRDHOST *host, BUFFER *wb) {
+void rrd_stats_api_v1_charts_allmetrics_prometheus(RRDHOST *host, BUFFER *wb, int help, int types) {
     rrdhost_rdlock(host);
 
     char hostname[PROMETHEUS_ELEMENT_MAX + 1];
@@ -194,7 +199,7 @@ void rrd_stats_api_v1_charts_allmetrics_prometheus(RRDHOST *host, BUFFER *wb) {
         prometheus_name_copy(chart, st->id, PROMETHEUS_ELEMENT_MAX);
 
         buffer_strcat(wb, "\n");
-        if(rrdset_is_available_for_viewers(st)) {
+        if(rrdset_is_available_for_backends(st)) {
             rrdset_rdlock(st);
 
             // for each dimension
@@ -204,18 +209,17 @@ void rrd_stats_api_v1_charts_allmetrics_prometheus(RRDHOST *host, BUFFER *wb) {
                     char dimension[PROMETHEUS_ELEMENT_MAX + 1];
                     prometheus_name_copy(dimension, rd->id, PROMETHEUS_ELEMENT_MAX);
 
-                    // buffer_sprintf(wb, "# HELP %s.%s %s\n", st->id, rd->id, st->units);
-
-                    switch(rd->algorithm) {
-                        case RRD_ALGORITHM_INCREMENTAL:
-                        case RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL:
-                            buffer_sprintf(wb, "# TYPE %s_%s counter\n", chart, dimension);
-                            break;
-
-                        default:
-                            buffer_sprintf(wb, "# TYPE %s_%s gauge\n", chart, dimension);
-                            break;
+                    const char *t = "gauge", *h = "gives";
+                    if(rd->algorithm == RRD_ALGORITHM_INCREMENTAL || rd->algorithm == RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL) {
+                        t = "counter";
+                        h = "delta gives";
                     }
+
+                    if(unlikely(help))
+                        buffer_sprintf(wb, "# HELP netdata chart %s, dimension %s, value * " COLLECTED_NUMBER_FORMAT " / " COLLECTED_NUMBER_FORMAT " %s %s (%s)\n", st->id, rd->id, rd->multiplier, rd->divisor, h, st->units, t);
+
+                    if(unlikely(types))
+                        buffer_sprintf(wb, "# TYPE %s_%s %s\n", chart, dimension, t);
 
                     // calculated_number n = (calculated_number)rd->last_collected_value * (calculated_number)(abs(rd->multiplier)) / (calculated_number)(abs(rd->divisor));
                     // buffer_sprintf(wb, "%s.%s " CALCULATED_NUMBER_FORMAT " %llu\n", st->id, rd->id, n, timeval_msec(&rd->last_collected_time));
@@ -232,6 +236,15 @@ void rrd_stats_api_v1_charts_allmetrics_prometheus(RRDHOST *host, BUFFER *wb) {
     }
 
     rrdhost_unlock(host);
+}
+
+void rrd_stats_api_v1_charts_allmetrics_prometheus_all_hosts(BUFFER *wb, int help, int types) {
+    RRDHOST *host;
+    rrd_rdlock();
+    rrdhost_foreach_read(host) {
+        rrd_stats_api_v1_charts_allmetrics_prometheus(host, wb, help, types);
+    }
+    rrd_unlock();
 }
 
 // ----------------------------------------------------------------------------
@@ -318,6 +331,74 @@ void rrd_stats_api_v1_charts_allmetrics_shell(RRDHOST *host, BUFFER *wb) {
         buffer_sprintf(wb, "NETDATA_ALARM_%s_%s_STATUS=\"%s\"\n", chart, alarm, rrdcalc_status2string(rc->status));
     }
 
+    rrdhost_unlock(host);
+}
+
+// ----------------------------------------------------------------------------
+
+void rrd_stats_api_v1_charts_allmetrics_json(RRDHOST *host, BUFFER *wb) {
+    rrdhost_rdlock(host);
+
+    buffer_strcat(wb, "{");
+
+    size_t chart_counter = 0;
+    size_t dimension_counter = 0;
+
+    // for each chart
+    RRDSET *st;
+    rrdset_foreach_read(st, host) {
+        if(rrdset_is_available_for_viewers(st)) {
+            rrdset_rdlock(st);
+
+            buffer_sprintf(wb, "%s\n"
+                    "\t\"%s\": {\n"
+                    "\t\t\"name\":\"%s\",\n"
+                    "\t\t\"context\":\"%s\",\n"
+                    "\t\t\"units\":\"%s\",\n"
+                    "\t\t\"last_updated\": %ld,\n"
+                    "\t\t\"dimensions\": {"
+                    , chart_counter?",":""
+                    , st->id
+                    , st->name
+                    , st->context
+                    , st->units
+                    , rrdset_last_entry_t(st)
+            );
+
+            chart_counter++;
+            dimension_counter = 0;
+
+            // for each dimension
+            RRDDIM *rd;
+            rrddim_foreach_read(rd, st) {
+                if(rd->collections_counter) {
+
+                    buffer_sprintf(wb, "%s\n"
+                            "\t\t\t\"%s\": {\n"
+                            "\t\t\t\t\"name\": \"%s\",\n"
+                            "\t\t\t\t\"value\": "
+                            , dimension_counter?",":""
+                            , rd->id
+                            , rd->name
+                    );
+
+                    if(isnan(rd->last_stored_value))
+                        buffer_strcat(wb, "null");
+                    else
+                        buffer_sprintf(wb, CALCULATED_NUMBER_FORMAT, rd->last_stored_value);
+
+                    buffer_strcat(wb, "\n\t\t\t}");
+
+                    dimension_counter++;
+                }
+            }
+
+            buffer_strcat(wb, "\n\t\t}\n\t}");
+            rrdset_unlock(st);
+        }
+    }
+
+    buffer_strcat(wb, "\n}");
     rrdhost_unlock(host);
 }
 

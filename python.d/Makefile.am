@@ -18,6 +18,7 @@ dist_python_DATA = \
     bind_rndc.chart.py \
     cpufreq.chart.py \
     cpuidle.chart.py \
+    dns_query_time.chart.py \
     dovecot.chart.py \
     elasticsearch.chart.py \
     example.chart.py \
@@ -33,12 +34,15 @@ dist_python_DATA = \
     mongodb.chart.py \
     mysql.chart.py \
     nginx.chart.py \
+    nsd.chart.py \
     ovpn_status_log.chart.py \
     phpfpm.chart.py \
     postfix.chart.py \
     postgres.chart.py \
+    rabbitmq.chart.py \
     redis.chart.py \
     retroshare.chart.py \
+    samba.chart.py \
     sensors.chart.py \
     squid.chart.py \
     smartd_log.chart.py \

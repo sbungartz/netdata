@@ -25,10 +25,13 @@ stamp-h1
 
 netdata
 apps.plugin
+freeipmi.plugin
 netdata.spec
 
 *.tar.*
 
+cmake-build-debug/
+makeself/tmp/
 sitespeed-result/
 cov-int/
 netdata-coverity-analysis.tgz
@@ -92,6 +95,7 @@ profile/benchmark-dictionary
 profile/benchmark-registry
 
 *.pyc
+*.run
 
 diagrams/*.png
 diagrams/*.svg

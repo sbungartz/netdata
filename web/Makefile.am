@@ -11,11 +11,13 @@ dist_web_DATA = \
 	dashboard.html \
 	dashboard.js \
 	dashboard_info.js \
+	dashboard_info_custom_example.js \
 	dashboard.css \
 	dashboard.slate.css \
 	favicon.ico \
 	goto-host-from-alarm.html \
 	index.html \
+	infographic.html \
 	netdata-swagger.yaml \
 	netdata-swagger.json \
 	robots.txt \

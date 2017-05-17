@@ -10,14 +10,14 @@ volatile struct global_statistics global_statistics = {
         .compressed_content_size = 0
 };
 
-pthread_mutex_t global_statistics_mutex = PTHREAD_MUTEX_INITIALIZER;
+netdata_mutex_t global_statistics_mutex = NETDATA_MUTEX_INITIALIZER;
 
 inline void global_statistics_lock(void) {
-    pthread_mutex_lock(&global_statistics_mutex);
+    netdata_mutex_lock(&global_statistics_mutex);
 }
 
 inline void global_statistics_unlock(void) {
-    pthread_mutex_unlock(&global_statistics_mutex);
+    netdata_mutex_unlock(&global_statistics_mutex);
 }
 
 void finished_web_request_statistics(uint64_t dt,
@@ -129,11 +129,19 @@ void global_statistics_charts(void) {
     getrusage(RUSAGE_THREAD, &thread);
     getrusage(RUSAGE_SELF, &me);
 
+#ifdef __FreeBSD__
+    if (!stcpu_thread) stcpu_thread = rrdset_find_localhost("netdata.plugin_freebsd_cpu");
+    if (!stcpu_thread) {
+        stcpu_thread = rrdset_create_localhost("netdata", "plugin_freebsd_cpu", NULL, "freebsd", NULL
+                                               , "NetData FreeBSD Plugin CPU usage", "milliseconds/s", 132000
+                                               , localhost->rrd_update_every, RRDSET_TYPE_STACKED);
+#else
     if (!stcpu_thread) stcpu_thread = rrdset_find_localhost("netdata.plugin_proc_cpu");
     if (!stcpu_thread) {
         stcpu_thread = rrdset_create_localhost("netdata", "plugin_proc_cpu", NULL, "proc", NULL
                                                , "NetData Proc Plugin CPU usage", "milliseconds/s", 132000
                                                , localhost->rrd_update_every, RRDSET_TYPE_STACKED);
+#endif
 
         rrddim_add(stcpu_thread, "user", NULL, 1, 1000, RRD_ALGORITHM_INCREMENTAL);
         rrddim_add(stcpu_thread, "system", NULL, 1, 1000, RRD_ALGORITHM_INCREMENTAL);

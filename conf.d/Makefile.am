@@ -28,6 +28,7 @@ dist_pythonconfig_DATA = \
     python.d/apache_cache.conf \
     python.d/bind_rndc.conf \
     python.d/cpufreq.conf \
+    python.d/dns_query_time.conf \
     python.d/dovecot.conf \
     python.d/elasticsearch.conf \
     python.d/example.conf \
@@ -43,12 +44,15 @@ dist_pythonconfig_DATA = \
     python.d/mongodb.conf \
     python.d/mysql.conf \
     python.d/nginx.conf \
+    python.d/nsd.conf \
     python.d/ovpn_status_log.conf \
     python.d/phpfpm.conf \
     python.d/postfix.conf \
     python.d/postgres.conf \
+    python.d/rabbitmq.conf \
     python.d/redis.conf \
     python.d/retroshare.conf \
+    python.d/samba.conf \
     python.d/sensors.conf \
     python.d/squid.conf \
     python.d/smartd_log.conf \
@@ -67,6 +71,7 @@ dist_healthconfig_DATA = \
     health.d/fping.conf \
     health.d/haproxy.conf \
     health.d/ipfs.conf \
+    health.d/ipmi.conf \
     health.d/isc_dhcpd.conf \
     health.d/mdstat.conf \
     health.d/memcached.conf \
@@ -79,6 +84,7 @@ dist_healthconfig_DATA = \
     health.d/squid.conf \
     health.d/varnish.conf \
     health.d/web_log.conf \
+    health.d/zfs.conf \
     $(NULL)
 
 if LINUX
@@ -120,4 +126,9 @@ dist_chartsconfig_DATA = \
     charts.d/opensips.conf \
     charts.d/postfix.conf \
     charts.d/squid.conf \
+    $(NULL)
+
+statsdconfigdir=$(configdir)/statsd.d
+dist_statsdconfig_DATA = \
+    statsd.d/example.conf \
     $(NULL)

@@ -40,6 +40,7 @@
 #include <strings.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
+#include <sys/ioctl.h>
 
 #ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
@@ -168,10 +169,11 @@
 // ----------------------------------------------------------------------------
 // netdata include files
 
-#include "simple_pattern.h"
-#include "avl.h"
 #include "clocks.h"
 #include "log.h"
+#include "locks.h"
+#include "simple_pattern.h"
+#include "avl.h"
 #include "global_statistics.h"
 #include "storage_number.h"
 #include "web_buffer.h"
@@ -188,6 +190,7 @@
 #include "plugin_nfacct.h"
 
 #if defined(__FreeBSD__)
+#include <pthread_np.h>
 #include "plugin_freebsd.h"
 #define NETDATA_OS_TYPE "freebsd"
 #elif defined(__APPLE__)
@@ -199,12 +202,14 @@
 #define NETDATA_OS_TYPE "linux"
 #endif /* __FreeBSD__, __APPLE__*/
 
+#include "statistical.h"
 #include "socket.h"
 #include "eval.h"
 #include "health.h"
 #include "rrd.h"
 #include "plugin_tc.h"
 #include "plugins_d.h"
+#include "statsd.h"
 #include "rrd2json.h"
 #include "rrd2json_api_old.h"
 #include "web_client.h"
@@ -236,7 +241,8 @@ extern void netdata_fix_chart_name(char *s);
 
 extern void strreverse(char* begin, char* end);
 extern char *mystrsep(char **ptr, char *s);
-extern char *trim(char *s);
+extern char *trim(char *s); // remove leading and trailing spaces; may return NULL
+extern char *trim_all(char *buffer); // like trim(), but also remove duplicate spaces inside the string; may return NULL
 
 extern int  vsnprintfz(char *dst, size_t n, const char *fmt, va_list args);
 extern int  snprintfz(char *dst, size_t n, const char *fmt, ...) PRINTFLIKE(3, 4);
@@ -286,6 +292,8 @@ extern pid_t get_system_pid_max(void);
 /* Number of ticks per second */
 extern unsigned int hz;
 extern void get_system_HZ(void);
+
+extern int recursively_delete_dir(const char *path, const char *reason);
 
 extern volatile sig_atomic_t netdata_exit;
 extern const char *os_type;

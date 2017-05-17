@@ -85,6 +85,18 @@ netdataDashboard.menu = {
         info: 'Readings of the configured system sensors.'
     },
 
+    'ipmi': {
+        title: 'IPMI',
+        icon: '<i class="fa fa-leaf" aria-hidden="true"></i>',
+        info: 'The Intelligent Platform Management Interface (IPMI) is a set of computer interface specifications for an autonomous computer subsystem that provides management and monitoring capabilities independently of the host system\'s CPU, firmware (BIOS or UEFI) and operating system.'
+    },
+
+    'samba': {
+        title: 'Samba',
+        icon: "<i class=\"fa fa-folder-open\" aria-hidden=\"true\"></i>",
+        info: 'Performance metrics of the Samba file share operations of this system. Samba is a implementation of Windows services, including Windows SMB protocol file shares.'
+    },
+
     'nfsd': {
         title: 'NFS Server',
         icon: '<i class="fa fa-folder-open" aria-hidden="true"></i>',
@@ -95,6 +107,12 @@ netdataDashboard.menu = {
         title: 'NFS Client',
         icon: '<i class="fa fa-folder-open" aria-hidden="true"></i>',
         info: 'Performance metrics of the NFS operations of this system, acting as an NFS client.'
+    },
+
+    'zfs': {
+        title: 'ZFS filesystem',
+        icon: '<i class="fa fa-folder-open" aria-hidden="true"></i>',
+        info: 'Performance metrics of the ZFS filesystem. The following charts visualize all metrics reported by <a href="https://github.com/zfsonlinux/zfs/blob/master/cmd/arcstat/arcstat.py" target="_blank">arcstat.py</a> and <a href="https://github.com/zfsonlinux/zfs/blob/master/cmd/arc_summary/arc_summary.py" target="_blank">arc_summary.py</a>.'
     },
 
     'apps': {
@@ -414,7 +432,6 @@ netdataDashboard.context = {
     },
 
     'system.idlejitter': {
-        colors: '#5555AA',
         info: 'Idle jitter is calculated by netdata. A thread is spawned that requests to sleep for a few microseconds. When the system wakes it up, it measures how many microseconds have passed. The difference between the requested and the actual duration of the sleep, is the <b>idle jitter</b>. This number is useful in real-time environments, where CPU jitter can affect the quality of the service (like VoIP media gateways).'
     },
 
@@ -432,6 +449,30 @@ netdataDashboard.context = {
 
     'system.swap': {
         info: 'System swap memory usage. Swap space is used when the amount of physical memory (RAM) is full. When the system needs more memory resources and the RAM is full, inactive pages in memory are moved to the swap space (usually a disk, a disk partition or a file).'
+    },
+
+    // ------------------------------------------------------------------------
+    // CPU charts
+
+    'cpu.cpu': {
+        commonMin: true,
+        commonMax: true,
+        valueRange: "[0, 100]"
+    },
+
+    'cpu.interrupts': {
+        commonMin: true,
+        commonMax: true
+    },
+
+    'cpu.softirqs': {
+        commonMin: true,
+        commonMax: true
+    },
+
+    'cpu.softnet_stat': {
+        commonMin: true,
+        commonMax: true
     },
 
     // ------------------------------------------------------------------------

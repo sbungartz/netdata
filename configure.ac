@@ -4,7 +4,7 @@
 AC_PREREQ(2.60)
 
 define([VERSION_MAJOR], [1])
-define([VERSION_MINOR], [5])
+define([VERSION_MINOR], [6])
 define([VERSION_FIX], [1])
 define([VERSION_NUMBER], VERSION_MAJOR[.]VERSION_MINOR[.]VERSION_FIX)
 define([VERSION_SUFFIX], [_rolling])
@@ -55,7 +55,7 @@ AC_ARG_ENABLE(
 )
 AC_ARG_ENABLE(
     [plugin-freeipmi],
-    [AS_HELP_STRING([--enable-plugin-freeipmi], [freeipmi plugin, requires root])],
+    [AS_HELP_STRING([--enable-plugin-freeipmi], [enable freeipmi plugin])],
     ,
     [enable_plugin_freeipmi="detect"]
 )
@@ -101,6 +101,12 @@ AC_ARG_ENABLE(
     ,
     [enable_x86_sse="yes"]
 )
+AC_ARG_ENABLE(
+    [lto],
+    [AS_HELP_STRING([--disable-lto], [Link Time Optimizations @<:@default enabled@:>@])],
+    ,
+    [enable_lto="detect"]
+)
 
 
 # -----------------------------------------------------------------------------
@@ -120,6 +126,7 @@ AC_CHECK_TYPES([struct timespec, clockid_t], [], [], [[#include <time.h>]])
 AC_SEARCH_LIBS([clock_gettime], [rt posix4])
 AC_CHECK_FUNCS([clock_gettime])
 AC_CHECK_FUNCS([sched_setscheduler sched_get_priority_min sched_get_priority_max nice])
+AC_CHECK_FUNCS([recvmmsg])
 
 AC_TYPE_INT8_T
 AC_TYPE_INT16_T
@@ -145,9 +152,11 @@ AC_CHECK_HEADERS_ONCE([sys/prctl.h])
 # -----------------------------------------------------------------------------
 # operating system detection
 
+AC_MSG_CHECKING([operating system])
 case "$host_os" in
 freebsd*)
     build_target=freebsd
+    CFLAGS="${CFLAGS} -I/usr/local/include"
     ;;
 darwin*)
     build_target=macos
@@ -161,33 +170,7 @@ esac
 AM_CONDITIONAL([FREEBSD], [test "${build_target}" = "freebsd"])
 AM_CONDITIONAL([MACOS], [test "${build_target}" = "macos"])
 AM_CONDITIONAL([LINUX], [test "${build_target}" = "linux"])
-
-
-# -----------------------------------------------------------------------------
-# compiler options
-
-AC_ARG_VAR([SSE_CANDIDATE], [C compiler flags for SSE])
-AS_CASE([$host_cpu],
-    [i?86], [SSE_CANDIDATE="yes"]
-)
-AC_SUBST([SSE_CANDIDATE])
-if test "${SSE_CANDIDATE}" = "yes" -a "${enable_x86_sse}" = "yes"; then
-    opt="-msse2 -mfpmath=sse"
-    AX_CHECK_COMPILE_FLAG($opt, [CFLAGS="$CFLAGS $opt"], [])
-fi
-
-if test "${GCC}" = "yes"; then
-    AC_DEFINE_UNQUOTED([likely(x)], [__builtin_expect(!!(x), 1)], [gcc branch optimization])
-    AC_DEFINE_UNQUOTED([unlikely(x)], [__builtin_expect(!!(x), 0)], [gcc branch optimization])
-else
-    AC_DEFINE_UNQUOTED([likely(x)], [(x)], [gcc branch optimization])
-    AC_DEFINE_UNQUOTED([unlikely(x)], [(x)], [gcc branch optimization])
-fi
-
-if test "${enable_pedantic}" = "yes"; then
-    enable_strict="yes"
-    CFLAGS="${CFLAGS} -pedantic -Wall -Wextra -Wno-long-long"
-fi
+AC_MSG_RESULT([${build_target}])
 
 
 # -----------------------------------------------------------------------------
@@ -197,27 +180,6 @@ ACX_PTHREAD(, [AC_MSG_ERROR([Cannot initialize pthread environment])])
 LIBS="${PTHREAD_LIBS} ${LIBS}"
 CFLAGS="${CFLAGS} ${PTHREAD_CFLAGS}"
 CC="${PTHREAD_CC}"
-
-
-# -----------------------------------------------------------------------------
-# memory allocation library
-
-AC_MSG_CHECKING([for memory allocator])
-TS_CHECK_JEMALLOC
-if test "$has_jemalloc" = "1"; then
-    AC_DEFINE([ENABLE_JEMALLOC], [1], [compile and link with jemalloc])
-    AC_MSG_RESULT([jemalloc])
-else
-    TS_CHECK_TCMALLOC
-    if test "$has_tcmalloc" = "1"; then
-        AC_DEFINE([ENABLE_TCMALLOC], [1], [compile and link with tcmalloc])
-        AC_MSG_RESULT([tcmalloc])
-    else
-        AC_MSG_RESULT([system])
-        AC_C_MALLOPT
-        AC_C_MALLINFO
-    fi
-fi
 
 
 # -----------------------------------------------------------------------------
@@ -281,6 +243,54 @@ PKG_CHECK_MODULES(
 AC_DEFINE([NETDATA_WITH_UUID], [1], [uuid usability])
 OPTIONAL_UUID_CLFAGS="${UUID_CFLAGS}"
 OPTIONAL_UUID_LIBS="${UUID_LIBS}"
+
+
+# -----------------------------------------------------------------------------
+# compiler options
+
+AC_ARG_VAR([SSE_CANDIDATE], [C compiler flags for SSE])
+AS_CASE([$host_cpu],
+    [i?86], [SSE_CANDIDATE="yes"]
+)
+AC_SUBST([SSE_CANDIDATE])
+if test "${SSE_CANDIDATE}" = "yes" -a "${enable_x86_sse}" = "yes"; then
+    opt="-msse2 -mfpmath=sse"
+    AX_CHECK_COMPILE_FLAG(${opt}, [CFLAGS="${CFLAGS} ${opt}"], [])
+fi
+
+if test "${GCC}" = "yes"; then
+    AC_DEFINE_UNQUOTED([likely(x)], [__builtin_expect(!!(x), 1)], [gcc branch optimization])
+    AC_DEFINE_UNQUOTED([unlikely(x)], [__builtin_expect(!!(x), 0)], [gcc branch optimization])
+else
+    AC_DEFINE_UNQUOTED([likely(x)], [(x)], [gcc branch optimization])
+    AC_DEFINE_UNQUOTED([unlikely(x)], [(x)], [gcc branch optimization])
+fi
+
+if test "${enable_pedantic}" = "yes"; then
+    enable_strict="yes"
+    CFLAGS="${CFLAGS} -pedantic -Wall -Wextra -Wno-long-long"
+fi
+
+
+# -----------------------------------------------------------------------------
+# memory allocation library
+
+AC_MSG_CHECKING([for memory allocator])
+TS_CHECK_JEMALLOC
+if test "$has_jemalloc" = "1"; then
+    AC_DEFINE([ENABLE_JEMALLOC], [1], [compile and link with jemalloc])
+    AC_MSG_RESULT([jemalloc])
+else
+    TS_CHECK_TCMALLOC
+    if test "$has_tcmalloc" = "1"; then
+        AC_DEFINE([ENABLE_TCMALLOC], [1], [compile and link with tcmalloc])
+        AC_MSG_RESULT([tcmalloc])
+    else
+        AC_MSG_RESULT([system])
+        AC_C_MALLOPT
+        AC_C_MALLINFO
+    fi
+fi
 
 
 # -----------------------------------------------------------------------------
@@ -355,12 +365,15 @@ AM_CONDITIONAL([ENABLE_PLUGIN_FREEIPMI], [test "${enable_plugin_freeipmi}" = "ye
 # -----------------------------------------------------------------------------
 # nfacct.plugin - libmnl, libnetfilter_acct
 
+AC_CHECK_HEADERS_ONCE([linux/netfilter/nfnetlink_conntrack.h])
+
 PKG_CHECK_MODULES(
     [NFACCT],
     [libnetfilter_acct],
     [have_libnetfilter_acct=yes],
     [have_libnetfilter_acct=no]
 )
+
 PKG_CHECK_MODULES(
     [LIBMNL],
     [libmnl],
@@ -377,6 +390,8 @@ test "${enable_plugin_nfacct}" = "yes" -a "${have_libmnl}" != "yes" && \
 AC_MSG_CHECKING([if nfacct.plugin should be enabled])
 if test "${enable_plugin_nfacct}" != "no" -a "${have_libnetfilter_acct}" = "yes" -a "${have_libmnl}" = "yes"; then
     enable_plugin_nfacct="yes"
+    AC_DEFINE([HAVE_LIBMNL], [1], [libmnl usability])
+    AC_DEFINE([HAVE_LIBNETFILTER_ACCT], [1], [libnetfilter_acct usability])
     AC_DEFINE([INTERNAL_PLUGIN_NFACCT], [1], [nfacct plugin usability])
     OPTIONAL_NFACCT_CLFAGS="${NFACCT_CFLAGS} ${LIBMNL_CFLAGS}"
     OPTIONAL_NFACCT_LIBS="${NFACCT_LIBS} ${LIBMNL_LIBS}"
@@ -385,6 +400,34 @@ else
 fi
 AC_MSG_RESULT([${enable_plugin_nfacct}])
 AM_CONDITIONAL([ENABLE_PLUGIN_NFACCT], [test "${enable_plugin_nfacct}" = "yes"])
+
+
+# -----------------------------------------------------------------------------
+# Link-Time-Optimization
+
+if test "${enable_lto}" != "no"; then
+    opt="-flto"
+    AX_CHECK_COMPILE_FLAG(${opt}, [have_lto=yes], [have_lto=no])
+fi
+if test "${have_lto}" = "yes"; then
+    oCFLAGS="${CFLAGS}"
+    CFLAGS="${CFLAGS} -flto ${OPTIONAL_MATH_CLFAGS} ${OPTIONAL_NFACCT_CLFAGS} ${OPTIONAL_ZLIB_CLFAGS} ${OPTIONAL_UUID_CLFAGS} ${OPTIONAL_LIBCAP_CFLAGS} ${OPTIONAL_IPMIMONITORING_CFLAGS}"
+    ac_cv_c_lto_cross_compile="${enable_lto}"
+    test "${ac_cv_c_lto_cross_compile}" != "yes" && ac_cv_c_lto_cross_compile="no"
+    AC_C_LTO
+    CFLAGS="${oCFLAGS}"
+    test "${ac_cv_c_lto}" != "yes" && have_lto="no"
+fi
+test "${enable_lto}" = "yes" -a "${have_lto}" != "yes" && \
+    AC_MSG_ERROR([LTO is required but is not available.])
+AC_MSG_CHECKING([if LTO should be enabled])
+if test "${enable_lto}" != "no" -a "${have_lto}" = "yes"; then
+    enable_lto="yes"
+    CFLAGS="${CFLAGS} -flto"
+else
+    enable_lto="no"
+fi
+AC_MSG_RESULT([${enable_lto}])
 
 
 # -----------------------------------------------------------------------------

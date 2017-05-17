@@ -3,7 +3,7 @@
 
 RRDHOST *localhost = NULL;
 size_t rrd_hosts_available = 0;
-pthread_rwlock_t rrd_rwlock = PTHREAD_RWLOCK_INITIALIZER;
+netdata_rwlock_t rrd_rwlock = NETDATA_RWLOCK_INITIALIZER;
 
 time_t rrdset_free_obsolete_time = 3600;
 time_t rrdhost_free_orphan_time = 3600;
@@ -80,24 +80,26 @@ static inline void rrdhost_init_machine_guid(RRDHOST *host, const char *machine_
 // RRDHOST - add a host
 
 RRDHOST *rrdhost_create(const char *hostname,
-        const char *guid,
-        const char *os,
-        int update_every,
-        int entries,
-        RRD_MEMORY_MODE memory_mode,
-        int health_enabled,
-        int rrdpush_enabled,
-        char *rrdpush_destination,
-        char *rrdpush_api_key,
-        int is_localhost
+                        const char *registry_hostname,
+                        const char *guid,
+                        const char *os,
+                        int update_every,
+                        long entries,
+                        RRD_MEMORY_MODE memory_mode,
+                        int health_enabled,
+                        int rrdpush_enabled,
+                        char *rrdpush_destination,
+                        char *rrdpush_api_key,
+                        int is_localhost
 ) {
-
     debug(D_RRDHOST, "Host '%s': adding with guid '%s'", hostname, guid);
+
+    rrd_check_wrlock();
 
     RRDHOST *host = callocz(1, sizeof(RRDHOST));
 
-    host->rrd_update_every    = update_every;
-    host->rrd_history_entries = entries;
+    host->rrd_update_every    = (update_every > 0)?update_every:1;
+    host->rrd_history_entries = align_entries_to_pagesize(memory_mode, entries);
     host->rrd_memory_mode     = memory_mode;
     host->health_enabled      = (memory_mode == RRD_MEMORY_MODE_NONE)? 0 : health_enabled;
     host->rrdpush_enabled     = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key);
@@ -108,12 +110,13 @@ RRDHOST *rrdhost_create(const char *hostname,
     host->rrdpush_pipe[1] = -1;
     host->rrdpush_socket  = -1;
 
-    pthread_mutex_init(&host->rrdpush_mutex, NULL);
-    pthread_rwlock_init(&host->rrdhost_rwlock, NULL);
+    netdata_mutex_init(&host->rrdpush_mutex);
+    netdata_rwlock_init(&host->rrdhost_rwlock);
 
     rrdhost_init_hostname(host, hostname);
     rrdhost_init_machine_guid(host, guid);
     rrdhost_init_os(host, os);
+    host->registry_hostname = strdupz((registry_hostname && *registry_hostname)?registry_hostname:hostname);
 
     avl_init_lock(&(host->rrdset_root_index),      rrdset_compare);
     avl_init_lock(&(host->rrdset_root_index_name), rrdset_compare_name);
@@ -144,7 +147,7 @@ RRDHOST *rrdhost_create(const char *hostname,
     else
         host->health_log.max = (unsigned int)n;
 
-    pthread_rwlock_init(&(host->health_log.alarm_log_rwlock), NULL);
+    netdata_rwlock_init(&host->health_log.alarm_log_rwlock);
 
     char filename[FILENAME_MAX + 1];
 
@@ -208,8 +211,6 @@ RRDHOST *rrdhost_create(const char *hostname,
     // ------------------------------------------------------------------------
     // link it and add it to the index
 
-    rrd_wrlock();
-
     if(is_localhost) {
         host->next = localhost;
         localhost = host;
@@ -230,11 +231,11 @@ RRDHOST *rrdhost_create(const char *hostname,
         host = NULL;
     }
     else {
-        info("Host '%s' with guid '%s' initialized"
+        info("Host '%s' (at registry as '%s') with guid '%s' initialized"
                      ", os %s"
                      ", update every %d"
                      ", memory mode %s"
-                     ", history entries %d"
+                     ", history entries %ld"
                      ", streaming %s"
                      " (to '%s' with api key '%s')"
                      ", health %s"
@@ -244,6 +245,7 @@ RRDHOST *rrdhost_create(const char *hostname,
                      ", alarms default handler '%s'"
                      ", alarms default recipient '%s'"
              , host->hostname
+             , host->registry_hostname
              , host->machine_guid
              , host->os
              , host->rrd_update_every
@@ -262,17 +264,17 @@ RRDHOST *rrdhost_create(const char *hostname,
     }
 
     rrd_hosts_available++;
-    rrd_unlock();
 
     return host;
 }
 
 RRDHOST *rrdhost_find_or_create(
           const char *hostname
+        , const char *registry_hostname
         , const char *guid
         , const char *os
         , int update_every
-        , int history
+        , long history
         , RRD_MEMORY_MODE mode
         , int health_enabled
         , int rrdpush_enabled
@@ -281,10 +283,12 @@ RRDHOST *rrdhost_find_or_create(
 ) {
     debug(D_RRDHOST, "Searching for host '%s' with guid '%s'", hostname, guid);
 
+    rrd_wrlock();
     RRDHOST *host = rrdhost_find_by_guid(guid, 0);
     if(!host) {
         host = rrdhost_create(
                 hostname
+                , registry_hostname
                 , guid
                 , os
                 , update_every
@@ -302,24 +306,36 @@ RRDHOST *rrdhost_find_or_create(
 
         if(strcmp(host->hostname, hostname)) {
             char *t = host->hostname;
-            char *n = strdupz(hostname);
-            host->hostname = n;
+            host->hostname = strdupz(hostname);
+            host->hash_hostname = simple_hash(host->hostname);
             freez(t);
         }
 
         if(host->rrd_update_every != update_every)
             error("Host '%s' has an update frequency of %d seconds, but the wanted one is %d seconds.", host->hostname, host->rrd_update_every, update_every);
 
-        if(host->rrd_history_entries != history)
-            error("Host '%s' has history of %d entries, but the wanted one is %d entries.", host->hostname, host->rrd_history_entries, history);
+        if(host->rrd_history_entries < history)
+            error("Host '%s' has history of %ld entries, but the wanted one is %ld entries.", host->hostname, host->rrd_history_entries, history);
 
         if(host->rrd_memory_mode != mode)
             error("Host '%s' has memory mode '%s', but the wanted one is '%s'.", host->hostname, rrd_memory_mode_name(host->rrd_memory_mode), rrd_memory_mode_name(mode));
     }
+    rrd_unlock();
 
     rrdhost_cleanup_orphan(host);
 
     return host;
+}
+
+static inline int rrdhost_should_be_deleted(RRDHOST *host, RRDHOST *protected, time_t now) {
+    if(host != protected
+       && host != localhost
+       && !host->connected_senders
+       && host->senders_disconnected_time
+       && host->senders_disconnected_time + rrdhost_free_orphan_time < now)
+        return 1;
+
+    return 0;
 }
 
 void rrdhost_cleanup_orphan(RRDHOST *protected) {
@@ -331,10 +347,7 @@ void rrdhost_cleanup_orphan(RRDHOST *protected) {
 
 restart_after_removal:
     rrdhost_foreach_write(host) {
-        if(host != protected
-           && host != localhost
-           && !host->connected_senders
-           && host->senders_disconnected_time + rrdhost_free_orphan_time < now) {
+        if(rrdhost_should_be_deleted(host, protected, now)) {
             info("Host '%s' with machine guid '%s' is obsolete - cleaning up.", host->hostname, host->machine_guid);
 
             if(rrdset_flag_check(host, RRDHOST_ORPHAN))
@@ -361,8 +374,10 @@ void rrd_init(char *hostname) {
     rrdpush_init();
 
     debug(D_RRDHOST, "Initializing localhost with hostname '%s'", hostname);
+    rrd_wrlock();
     localhost = rrdhost_create(
             hostname
+            , registry_get_this_machine_hostname()
             , registry_get_this_machine_guid()
             , os_type
             , default_rrd_update_every
@@ -374,40 +389,41 @@ void rrd_init(char *hostname) {
             , default_rrdpush_api_key
             , 1
     );
+    rrd_unlock();
 }
 
 // ----------------------------------------------------------------------------
 // RRDHOST - lock validations
 // there are only used when NETDATA_INTERNAL_CHECKS is set
 
-void rrdhost_check_rdlock_int(RRDHOST *host, const char *file, const char *function, const unsigned long line) {
+void __rrdhost_check_rdlock(RRDHOST *host, const char *file, const char *function, const unsigned long line) {
     debug(D_RRDHOST, "Checking read lock on host '%s'", host->hostname);
 
-    int ret = pthread_rwlock_trywrlock(&host->rrdhost_rwlock);
+    int ret = netdata_rwlock_trywrlock(&host->rrdhost_rwlock);
     if(ret == 0)
         fatal("RRDHOST '%s' should be read-locked, but it is not, at function %s() at line %lu of file '%s'", host->hostname, function, line, file);
 }
 
-void rrdhost_check_wrlock_int(RRDHOST *host, const char *file, const char *function, const unsigned long line) {
+void __rrdhost_check_wrlock(RRDHOST *host, const char *file, const char *function, const unsigned long line) {
     debug(D_RRDHOST, "Checking write lock on host '%s'", host->hostname);
 
-    int ret = pthread_rwlock_tryrdlock(&host->rrdhost_rwlock);
+    int ret = netdata_rwlock_tryrdlock(&host->rrdhost_rwlock);
     if(ret == 0)
         fatal("RRDHOST '%s' should be write-locked, but it is not, at function %s() at line %lu of file '%s'", host->hostname, function, line, file);
 }
 
-void rrd_check_rdlock_int(const char *file, const char *function, const unsigned long line) {
+void __rrd_check_rdlock(const char *file, const char *function, const unsigned long line) {
     debug(D_RRDHOST, "Checking read lock on all RRDs");
 
-    int ret = pthread_rwlock_trywrlock(&rrd_rwlock);
+    int ret = netdata_rwlock_trywrlock(&rrd_rwlock);
     if(ret == 0)
         fatal("RRDs should be read-locked, but it are not, at function %s() at line %lu of file '%s'", function, line, file);
 }
 
-void rrd_check_wrlock_int(const char *file, const char *function, const unsigned long line) {
+void __rrd_check_wrlock(const char *file, const char *function, const unsigned long line) {
     debug(D_RRDHOST, "Checking write lock on all RRDs");
 
-    int ret = pthread_rwlock_tryrdlock(&rrd_rwlock);
+    int ret = netdata_rwlock_tryrdlock(&rrd_rwlock);
     if(ret == 0)
         fatal("RRDs should be write-locked, but it are not, at function %s() at line %lu of file '%s'", function, line, file);
 }
@@ -472,7 +488,10 @@ void rrdhost_free(RRDHOST *host) {
     freez(host->health_default_recipient);
     freez(host->health_log_filename);
     freez(host->hostname);
+    freez(host->registry_hostname);
     rrdhost_unlock(host);
+    netdata_rwlock_destroy(&host->health_log.alarm_log_rwlock);
+    netdata_rwlock_destroy(&host->rrdhost_rwlock);
     freez(host);
 
     rrd_hosts_available--;
@@ -490,7 +509,7 @@ void rrdhost_free_all(void) {
 void rrdhost_save(RRDHOST *host) {
     if(!host) return;
 
-    info("Saving database of host '%s'...", host->hostname);
+    info("Saving/Closing database of host '%s'...", host->hostname);
 
     RRDSET *st;
 
@@ -526,6 +545,8 @@ void rrdhost_delete(RRDHOST *host) {
         rrdset_delete(st);
         rrdset_unlock(st);
     }
+
+    recursively_delete_dir(host->cache_dir, "left over host");
 
     rrdhost_unlock(host);
 }

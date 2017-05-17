@@ -29,6 +29,12 @@ set(NETDATA_SOURCE_FILES
         src/eval.c
         src/eval.h
         src/freebsd_sysctl.c
+        src/freebsd_getmntinfo.c
+        src/freebsd_getifaddrs.c
+        src/freebsd_devstat.c
+        src/zfs_common.c
+        src/zfs_common.h
+        src/freebsd_kstat_zfs.c
         src/global_statistics.c
         src/global_statistics.h
         src/health.c
@@ -83,6 +89,7 @@ set(NETDATA_SOURCE_FILES
         src/proc_self_mountinfo.c
         src/proc_self_mountinfo.h
         src/proc_softirqs.c
+        src/proc_spl_kstat_zfs.c
         src/proc_stat.c
         src/proc_sys_kernel_random_entropy_avail.c
         src/proc_uptime.c
@@ -144,7 +151,7 @@ set(NETDATA_SOURCE_FILES
         src/web_client.h
         src/web_server.c
         src/web_server.h
-        )
+        src/locks.h src/statsd.c src/statsd.h src/statistical.c src/statistical.h)
 
 set(APPS_PLUGIN_SOURCE_FILES
         src/appconfig.c

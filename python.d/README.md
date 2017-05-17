@@ -228,6 +228,16 @@ It produces one stacked chart per CPU, showing the percentage of time spent in
 each state.
 
 ---
+# dns_query_time
+
+This module provides dns query time statistics.
+
+**Requirement:**
+* `python-dnspython` package
+
+It produces one aggregate chart or one chart per dns server, showing the query time.
+
+---
 
 # dovecot
 
@@ -306,12 +316,6 @@ If no configuration is given, module will attempt to connect to dovecot using un
 # elasticsearch
 
 Module monitor elasticsearch performance and health metrics
-
-**Requirements:**
- * python `requests` package.
-
-You need to install it manually. (python-requests or python3-requests depending on the version of python).
-
 
 It produces:
 
@@ -990,30 +994,58 @@ Without configuration, module attempts to connect to `http://localhost/stub_stat
 
 ---
 
-# nginx_log
+# nsd
 
-Module monitors nginx access log and produces only one chart:
+Module uses the `nsd-control stats_noreset` command to provide `nsd` statistics.
 
-1. **nginx status codes** in requests/s
- * 2xx
- * 3xx
- * 4xx
- * 5xx
+**Requirements:**
+ * Version of `nsd` must be 4.0+
+ * Netdata must have permissions to run `nsd-control stats_noreset`
 
-### configuration
+It produces:
 
-Sample for two vhosts:
+1. **Queries**
+ * queries
 
-```yaml
-site_A:
-  path: '/var/log/nginx/access-A.log'
+2. **Zones**
+ * master
+ * slave
 
-site_B:
-  name: 'local'
-  path: '/var/log/nginx/access-B.log'
-```
+3. **Protocol**
+ * udp
+ * udp6
+ * tcp
+ * tcp6
 
-When no configuration file is found, module tries to parse `/var/log/nginx/access.log` file.
+4. **Query Type**
+ * A
+ * NS
+ * CNAME
+ * SOA
+ * PTR
+ * HINFO
+ * MX
+ * NAPTR
+ * TXT
+ * AAAA
+ * SRV
+ * ANY
+
+5. **Transfer**
+ * NOTIFY
+ * AXFR
+
+6. **Return Code**
+ * NOERROR
+ * FORMERR
+ * SERVFAIL
+ * NXDOMAIN
+ * NOTIMP
+ * REFUSED
+ * YXDOMAIN
+
+
+Configuration is not needed.
 
 ---
 
@@ -1107,6 +1139,129 @@ Configuration is not needed.
 
 ---
 
+# postgres
+
+Module monitors one or more postgres servers.
+
+**Requirements:**
+
+ * `python-psycopg2` package. You have to install to manually.
+
+Following charts are drawn:
+
+1. **Database size** MB
+ * size
+
+2. **Current Backend Processes** processes
+ * active
+
+3. **Write-Ahead Logging Statistics** files/s
+ * total
+ * ready
+ * done
+
+4. **Checkpoints** writes/s
+ * scheduled
+ * requested
+ 
+5. **Current connections to db** count
+ * connections
+ 
+6. **Tuples returned from db** tuples/s
+ * sequential
+ * bitmap
+
+7. **Tuple reads from db** reads/s
+ * disk
+ * cache
+
+8. **Transactions on db** transactions/s
+ * commited
+ * rolled back
+
+9. **Tuples written to db** writes/s
+ * inserted
+ * updated
+ * deleted
+ * conflicts
+
+10. **Locks on db** count per type
+ * locks
+ 
+### configuration
+
+```yaml
+socket:
+  name         : 'socket'
+  user         : 'postgres'
+  database     : 'postgres'
+
+tcp:
+  name         : 'tcp'
+  user         : 'postgres'
+  database     : 'postgres'
+  host         : 'localhost'
+  port         : 5432
+```
+
+When no configuration file is found, module tries to connect to TCP/IP socket: `localhost:5432`.
+
+---
+
+# rabbitmq
+
+Module monitor rabbitmq performance and health metrics.
+
+Following charts are drawn:
+
+1. **Queued Messages**
+ * ready
+ * unacknowledged
+
+2. **Message Rates**
+ * ack
+ * redelivered
+ * deliver
+ * publish
+
+3. **Global Counts**
+ * channels
+ * consumers
+ * connections
+ * queues
+ * exchanges
+
+4. **File Descriptors**
+ * used descriptors
+
+5. **Socket Descriptors**
+ * used descriptors
+
+6. **Erlang processes**
+ * used processes
+
+7. **Memory**
+ * free memory in megabytes
+
+8. **Disk Space**
+ * free disk space in gigabytes
+
+### configuration
+
+```yaml
+socket:
+  name     : 'local'
+    host     : '127.0.0.1'
+    port     :  15672
+    user     : 'guest'
+    pass     : 'guest'
+
+```
+
+When no configuration file is found, module tries to connect to: `localhost:15672`.
+
+---
+
 # redis
 
 Get INFO data from redis instance.
@@ -1150,6 +1305,68 @@ When no configuration file is found, module tries to connect to TCP/IP socket: `
 
 ---
 
+# samba
+
+Performance metrics of Samba file sharing.
+
+It produces the following charts:
+
+1. **Syscall R/Ws** in kilobytes/s
+ * sendfile
+ * recvfle
+
+2. **Smb2 R/Ws** in kilobytes/s
+ * readout
+ * writein
+ * readin
+ * writeout
+
+3. **Smb2 Create/Close** in operations/s
+ * create
+ * close
+
+4. **Smb2 Info** in operations/s
+ * getinfo
+ * setinfo
+
+5. **Smb2 Find** in operations/s
+ * find
+
+6. **Smb2 Notify** in operations/s
+ * notify
+
+7. **Smb2 Lesser Ops** as counters
+ * tcon
+ * negprot
+ * tdis
+ * cancel
+ * logoff
+ * flush
+ * lock
+ * keepalive
+ * break
+ * sessetup
+
+### configuration
+
+Requires that smbd has been compiled with profiling enabled.  Also required
+that `smbd` was started either with the `-P 1` option or inside `smb.conf`
+using `smbd profiling level`.
+
+This plugin uses `smbstatus -P` which can only be executed by root.  It uses
+sudo and assumes that it is configured such that the `netdata` user can
+execute smbstatus as root without password.
+
+For example:
+
+    netdata ALL=(ALL)       NOPASSWD: /usr/bin/smbstatus -P
+
+```yaml
+update_every : 5 # update frequency
+```
+
+---
+
 # sensors
 
 System sensors information.
@@ -1159,6 +1376,12 @@ Charts are created dynamically.
 ### configuration
 
 For detailed configuration information please read [`sensors.conf`](https://github.com/firehol/netdata/blob/master/conf.d/python.d/sensors.conf) file.
+
+### possible issues
+
+There have been reports from users that on certain servers, ACPI ring buffer errors are printed by the kernel (`dmesg`) when ACPI sensors are being accessed.
+We are tracking such cases in issue [#827](https://github.com/firehol/netdata/issues/827).
+Please join this discussion for help.
 
 ---
 
@@ -1198,6 +1421,45 @@ local:
 ```
 
 Without any configuration module will try to autodetect where squid presents its `counters` data
+ 
+---
+
+# smartd_log
+
+Module monitor `smartd` log files to collect HDD/SSD S.M.A.R.T attributes.
+
+It produces following charts (you can add additional attributes in the module configuration file):
+
+1. **Read Error Rate** attribute 1
+
+2. **Start/Stop Count** attribute 4
+
+3. **Reallocated Sectors Count** attribute 5
+ 
+4. **Seek Error Rate** attribute 7
+
+5. **Power-On Hours Count** attribute 9
+
+6. **Power Cycle Count** attribute 12
+
+7. **Load/Unload Cycles** attribute 193
+
+8. **Temperature** attribute 194
+
+9. **Current Pending Sectors** attribute 197
+ 
+10. **Off-Line Uncorrectable** attribute 198
+
+11. **Write Error Rate** attribute 200
+ 
+### configuration
+
+```yaml
+local:
+  log_path : '/var/log/smartd/'
+```
+
+If no configuration is given, module will attempt to read log files in /var/log/smartd/ directory.
  
 ---
 
@@ -1300,3 +1562,68 @@ It produces:
 No configuration is needed.
 
 ---
+
+# web_log
+
+Tails the apache/nginx/lighttpd/gunicorn log files to collect real-time web-server statistics.
+
+It produces following charts:
+
+1. **Response by type** requests/s
+ * success (1xx, 2xx, 304)
+ * error (5xx)
+ * redirect (3xx except 304)
+ * bad (4xx)
+ * other (all other responses)
+
+2. **Response by code family** requests/s
+ * 1xx (informational)
+ * 2xx (successful)
+ * 3xx (redirect)
+ * 4xx (bad)
+ * 5xx (internal server errors)
+ * other (non-standart responses)
+ * unmatched (the lines in the log file that are not matched)
+
+3. **Detailed Response Codes** requests/s (number of responses for each response code family individually)
+ 
+4. **Bandwidth** KB/s
+ * received (bandwidth of requests)
+ * send (bandwidth of responses)
+
+5. **Timings** ms (request processing time)
+ * min (bandwidth of requests)
+ * max (bandwidth of responses)
+ * average (bandwidth of responses)
+
+6. **Request per url** requests/s (configured by user)
+
+7. **Http Methods** requests/s (requests per http method)
+
+8. **Http Versions** requests/s (requests per http version)
+
+9. **IP protocols** requests/s (requests per ip protocol version)
+
+10. **Curent Poll Unique Client IPs** unique ips/s (unique client IPs per data collection iteration)
+
+11. **All Time Unique Client IPs** unique ips/s (unique client IPs since the last restart of netdata)
+
+ 
+### configuration
+
+```yaml
+nginx_log:
+  name  : 'nginx_log'
+  path  : '/var/log/nginx/access.log'
+
+apache_log:
+  name  : 'apache_log'
+  path  : '/var/log/apache/other_vhosts_access.log'
+  categories:
+      cacti : 'cacti.*'
+      observium : 'observium'
+```
+
+Module has preconfigured jobs for nginx, apache and gunicorn on various distros.
+
+--- 
